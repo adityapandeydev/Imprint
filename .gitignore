@@ -1,0 +1,40 @@
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Environment & Secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Go Artifacts
+backend/bin/
+backend/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+backend/vendor/
+
+# Node & Bun Artifacts
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+bun.lockb
+bun.lock
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test & Coverage Artifacts
+coverage/
+*.out
+*.prof
+
+docs/

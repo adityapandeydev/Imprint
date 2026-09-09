@@ -1,0 +1,15 @@
+{
+  "name": "imprint-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Imprint - Book discovery, cataloging, and personal collection management",
+  "scripts": {
+    "dev:backend": "cd backend && go run ./cmd/server/main.go",
+    "dev:frontend": "cd frontend && bun run dev",
+    "test:backend": "cd backend && go test -v ./...",
+    "test:frontend": "cd frontend && bun test",
+    "lint:backend": "cd backend && go vet ./...",
+    "build:backend": "cd backend && go build -o bin/server ./cmd/server/main.go",
+    "build:frontend": "cd frontend && bun run build"
+  }
+}
