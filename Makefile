@@ -1,4 +1,4 @@
-.PHONY: help dev-backend dev-frontend test-backend test-frontend build-backend build-frontend lint
+.PHONY: help dev-backend dev-frontend test-backend test-frontend build-backend build-frontend lint migrate
 
 help:
 	@echo "Available commands:"
@@ -6,9 +6,13 @@ help:
 	@echo "  make dev-frontend  - Run the React frontend dev server with Bun"
 	@echo "  make test-backend  - Run backend unit tests"
 	@echo "  make test-frontend - Run frontend tests"
+	@echo "  make migrate       - Run database migrations"
 	@echo "  make build-backend - Compile Go backend binary"
 	@echo "  make build-frontend- Build production frontend bundle"
 	@echo "  make lint          - Run linters and checks"
+
+migrate:
+	cd backend && go run ./cmd/migrate/main.go
 
 dev-backend:
 	cd backend && go run ./cmd/server/main.go
