@@ -166,7 +166,7 @@ func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilt
 	}
 	defer rows.Close()
 
-	var items []domain.WishlistItem
+	items := make([]domain.WishlistItem, 0)
 	for rows.Next() {
 		var (
 			item        domain.WishlistItem

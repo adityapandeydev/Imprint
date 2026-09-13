@@ -16,8 +16,9 @@ import (
 const (
 	DefaultBaseURL      = "https://openlibrary.org"
 	DefaultCoverBaseURL = "https://covers.openlibrary.org"
-	DefaultTimeout      = 5 * time.Second
+	DefaultTimeout      = 12 * time.Second
 	DefaultLimit        = 20
+	DefaultUserAgent    = "Imprint/1.0 (https://github.com/adityapandeydev/Imprint)"
 )
 
 // Client implements domain.BookProvider for the Open Library API.
@@ -99,6 +100,7 @@ func (c *Client) Search(ctx context.Context, params domain.ProviderSearchParams)
 	if params.ISBN != "" {
 		queryValues.Set("isbn", domain.CleanIdentifier(params.ISBN))
 	}
+	queryValues.Set("fields", "key,title,author_name,first_publish_year,cover_i,subject,edition_count")
 
 	reqURL := fmt.Sprintf("%s/search.json?%s", c.baseURL, queryValues.Encode())
 
@@ -144,7 +146,7 @@ func (c *Client) GetWork(ctx context.Context, providerWorkID string) (*domain.Wo
 	if err != nil {
 		return nil, fmt.Errorf("creating work request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Imprint/1.0")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -178,7 +180,7 @@ func (c *Client) GetEditionByISBN(ctx context.Context, isbn string) (*domain.Edi
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating isbn request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Imprint/1.0")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -229,7 +231,7 @@ func (c *Client) GetEditionsForWork(ctx context.Context, providerWorkID string, 
 	if err != nil {
 		return nil, fmt.Errorf("creating editions request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Imprint/1.0")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)

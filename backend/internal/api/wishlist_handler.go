@@ -38,17 +38,24 @@ func (h *WishlistHandler) List(w http.ResponseWriter, r *http.Request) {
 		Error(w, r, err)
 		return
 	}
+	if items == nil {
+		items = make([]domain.WishlistItem, 0)
+	}
 
 	JSON(w, http.StatusOK, items)
 }
 
 // AddRequest defines the payload for adding an item to a wishlist.
 type AddRequest struct {
-	WorkID    string               `json:"work_id"`
-	EditionID *string              `json:"edition_id,omitempty"`
-	Status    domain.ReadingStatus `json:"status,omitempty"`
-	Priority  int                  `json:"priority,omitempty"`
-	Notes     string               `json:"notes,omitempty"`
+	WorkID       string               `json:"work_id"`
+	EditionID    *string              `json:"edition_id,omitempty"`
+	Status       domain.ReadingStatus `json:"status,omitempty"`
+	Priority     int                  `json:"priority,omitempty"`
+	Notes        string               `json:"notes,omitempty"`
+	Title        string               `json:"title,omitempty"`
+	Author       string               `json:"author,omitempty"`
+	CoverURL     string               `json:"cover_url,omitempty"`
+	OriginalYear *int                 `json:"original_year,omitempty"`
 }
 
 // Add handles POST /api/v1/wishlist
@@ -62,12 +69,16 @@ func (h *WishlistHandler) Add(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item, err := h.wishlistService.AddToWishlist(r.Context(), app.AddToWishlistRequest{
-		UserID:    userID,
-		WorkID:    req.WorkID,
-		EditionID: req.EditionID,
-		Status:    req.Status,
-		Priority:  req.Priority,
-		Notes:     req.Notes,
+		UserID:       userID,
+		WorkID:       req.WorkID,
+		EditionID:    req.EditionID,
+		Status:       req.Status,
+		Priority:     req.Priority,
+		Notes:        req.Notes,
+		Title:        req.Title,
+		Author:       req.Author,
+		CoverURL:     req.CoverURL,
+		OriginalYear: req.OriginalYear,
 	})
 	if err != nil {
 		Error(w, r, err)

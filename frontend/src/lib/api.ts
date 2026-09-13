@@ -46,13 +46,18 @@ export const api = {
     if (!query.trim()) return [];
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     const res = await fetch(`${API_BASE}/books/search?${params.toString()}`);
-    return handleResponse<Work[]>(res);
+    const data = await handleResponse<Work[]>(res);
+    return Array.isArray(data) ? data : [];
   },
 
   // Get full work metadata and published editions
   async getBook(id: string): Promise<{ work: Work; editions: Edition[] }> {
     const res = await fetch(`${API_BASE}/books/${encodeURIComponent(id)}`);
-    return handleResponse<{ work: Work; editions: Edition[] }>(res);
+    const data = await handleResponse<{ work: Work; editions: Edition[] }>(res);
+    return {
+      work: data?.work,
+      editions: Array.isArray(data?.editions) ? data.editions : [],
+    };
   },
 
   // Lookup edition and parent work by ISBN
@@ -67,7 +72,8 @@ export const api = {
     if (status) params.set('status', status);
     const url = `${API_BASE}/wishlist${params.toString() ? `?${params.toString()}` : ''}`;
     const res = await fetch(url);
-    return handleResponse<WishlistItem[]>(res);
+    const data = await handleResponse<WishlistItem[]>(res);
+    return Array.isArray(data) ? data : [];
   },
 
   // Add work / edition to collection
@@ -77,6 +83,10 @@ export const api = {
     status?: ReadingStatus;
     priority?: number;
     notes?: string;
+    title?: string;
+    author?: string;
+    cover_url?: string;
+    original_year?: number;
   }): Promise<WishlistItem> {
     const res = await fetch(`${API_BASE}/wishlist`, {
       method: 'POST',

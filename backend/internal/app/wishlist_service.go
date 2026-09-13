@@ -11,12 +11,16 @@ import (
 
 // AddToWishlistRequest encapsulates input for adding a work to a user's collection.
 type AddToWishlistRequest struct {
-	UserID    string               `json:"user_id"`
-	WorkID    string               `json:"work_id"` // Local UUID or Open Library Work ID
-	EditionID *string              `json:"edition_id,omitempty"`
-	Status    domain.ReadingStatus `json:"status"`
-	Priority  int                  `json:"priority"`
-	Notes     string               `json:"notes,omitempty"`
+	UserID       string               `json:"user_id"`
+	WorkID       string               `json:"work_id"` // Local UUID or Open Library Work ID
+	EditionID    *string              `json:"edition_id,omitempty"`
+	Status       domain.ReadingStatus `json:"status"`
+	Priority     int                  `json:"priority"`
+	Notes        string               `json:"notes,omitempty"`
+	Title        string               `json:"title,omitempty"`
+	Author       string               `json:"author,omitempty"`
+	CoverURL     string               `json:"cover_url,omitempty"`
+	OriginalYear *int                 `json:"original_year,omitempty"`
 }
 
 // UpdateWishlistRequest encapsulates input for modifying an existing wishlist item.
@@ -62,7 +66,25 @@ func (s *WishlistService) ListUserWishlist(
 	if strings.TrimSpace(userID) == "" {
 		return nil, domain.ErrUserNotFound
 	}
-	return s.wishlistRepo.ListByUser(ctx, userID, statusFilter)
+	items, err := s.wishlistRepo.ListByUser(ctx, userID, statusFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range items {
+		if items[i].Work == nil && items[i].WorkID != "" {
+			if w, err := s.workRepo.GetWorkByID(ctx, items[i].WorkID); err == nil {
+				items[i].Work = w
+			}
+		}
+		if items[i].Edition == nil && items[i].EditionID != nil && *items[i].EditionID != "" {
+			if ed, err := s.editionRepo.GetEditionByID(ctx, *items[i].EditionID); err == nil {
+				items[i].Edition = ed
+			}
+		}
+	}
+
+	return items, nil
 }
 
 // AddToWishlist adds a book to a user's collection.
@@ -76,9 +98,38 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 	}
 
 	// 1. Ensure Work exists locally (or resolve from provider lazily)
-	work, editions, err := s.catalogService.GetWork(ctx, req.WorkID)
-	if err != nil {
-		return nil, fmt.Errorf("resolving work: %w", err)
+	var work *domain.Work
+	var editions []domain.Edition
+
+	// First try local lookups
+	if w, err := s.workRepo.GetWorkByID(ctx, req.WorkID); err == nil {
+		work = w
+	} else if w, err := s.workRepo.GetWorkByOpenLibraryID(ctx, req.WorkID); err == nil {
+		work = w
+	}
+
+	// If not found locally, but client provided metadata, save locally immediately
+	if work == nil && req.Title != "" {
+		newWork := &domain.Work{
+			Title:             req.Title,
+			CoverURL:          req.CoverURL,
+			OriginalYear:      req.OriginalYear,
+			OpenLibraryWorkID: req.WorkID,
+		}
+		if req.Author != "" {
+			newWork.Authors = []domain.Author{{Name: req.Author}}
+		}
+		_ = s.workRepo.SaveWork(ctx, newWork)
+		work = newWork
+	}
+
+	// If still not found, resolve from provider
+	if work == nil {
+		var err error
+		work, editions, err = s.catalogService.GetWork(ctx, req.WorkID)
+		if err != nil {
+			return nil, fmt.Errorf("resolving work: %w", err)
+		}
 	}
 
 	// 2. Check if already in user's collection
@@ -87,15 +138,17 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 		return nil, domain.ErrDuplicateWishlistItem
 	}
 
-	// 3. Resolve preferred edition if not provided (default to first available edition if present)
+	// 3. Resolve preferred edition if not provided
 	var preferredEditionID *string
+	var preferredEdition *domain.Edition
 	if req.EditionID != nil && *req.EditionID != "" {
-		// Validate edition exists
-		if _, err := s.editionRepo.GetEditionByID(ctx, *req.EditionID); err == nil {
+		if ed, err := s.editionRepo.GetEditionByID(ctx, *req.EditionID); err == nil {
 			preferredEditionID = req.EditionID
+			preferredEdition = ed
 		}
 	} else if len(editions) > 0 {
 		preferredEditionID = &editions[0].ID
+		preferredEdition = &editions[0]
 	}
 
 	// Default status and priority
@@ -111,7 +164,9 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 	item := domain.WishlistItem{
 		UserID:    req.UserID,
 		WorkID:    work.ID,
+		Work:      work,
 		EditionID: preferredEditionID,
+		Edition:   preferredEdition,
 		Status:    status,
 		Priority:  priority,
 		Notes:     strings.TrimSpace(req.Notes),
@@ -133,8 +188,18 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 		return nil, fmt.Errorf("saving wishlist item: %w", err)
 	}
 
-	// Re-fetch hydrated item with Work and Edition details
-	return s.wishlistRepo.GetByID(ctx, item.ID)
+	fetched, err := s.wishlistRepo.GetByID(ctx, item.ID)
+	if err == nil {
+		if fetched.Work == nil {
+			fetched.Work = work
+		}
+		if fetched.Edition == nil {
+			fetched.Edition = preferredEdition
+		}
+		return fetched, nil
+	}
+
+	return &item, nil
 }
 
 // UpdateWishlistItem updates status, priority, rating, or notes for a wishlist entry.
@@ -152,8 +217,12 @@ func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWish
 	if req.EditionID != nil {
 		if *req.EditionID == "" {
 			item.EditionID = nil
+			item.Edition = nil
 		} else {
 			item.EditionID = req.EditionID
+			if ed, err := s.editionRepo.GetEditionByID(ctx, *req.EditionID); err == nil {
+				item.Edition = ed
+			}
 		}
 	}
 
@@ -199,7 +268,18 @@ func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWish
 		return nil, fmt.Errorf("updating wishlist item: %w", err)
 	}
 
-	return s.wishlistRepo.GetByID(ctx, item.ID)
+	res, err := s.wishlistRepo.GetByID(ctx, item.ID)
+	if err == nil {
+		if res.Work == nil {
+			res.Work = item.Work
+		}
+		if res.Edition == nil {
+			res.Edition = item.Edition
+		}
+		return res, nil
+	}
+
+	return item, nil
 }
 
 // RemoveFromWishlist removes an item from a user's collection.

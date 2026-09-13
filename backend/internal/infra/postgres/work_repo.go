@@ -235,7 +235,7 @@ func (r *WorkRepo) SearchLocalWorks(ctx context.Context, queryString string, lim
 	}
 	defer rows.Close()
 
-	var works []domain.Work
+	works := make([]domain.Work, 0)
 	for rows.Next() {
 		var w domain.Work
 		if err := rows.Scan(

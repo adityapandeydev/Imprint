@@ -9,9 +9,17 @@ import (
 	"time"
 
 	"github.com/adityapandeydev/imprint/backend/internal/infra/postgres"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	for _, envPath := range []string{".env", "../.env", filepath.Join("..", "..", ".env")} {
+		if _, err := os.Stat(envPath); err == nil {
+			_ = godotenv.Load(envPath)
+			break
+		}
+	}
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL environment variable is required")

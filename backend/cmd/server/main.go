@@ -22,7 +22,12 @@ import (
 
 func main() {
 	// 1. Automatically load .env from root or current directory
-	_ = godotenv.Load(".env", "../.env", filepath.Join("..", "..", ".env"))
+	for _, envPath := range []string{".env", "../.env", filepath.Join("..", "..", ".env")} {
+		if _, err := os.Stat(envPath); err == nil {
+			_ = godotenv.Load(envPath)
+			break
+		}
+	}
 
 	// 2. Structured slog logger setup
 	logLevel := slog.LevelInfo
@@ -223,12 +228,21 @@ func (m *memWishlistRepo) GetByID(ctx context.Context, id string) (*domain.Wishl
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (m *memWishlistRepo) GetByUserAndWork(ctx context.Context, uID, wID string) (*domain.WishlistItem, error) {
+	for _, it := range m.items {
+		if it.UserID == uID && it.WorkID == wID {
+			return it, nil
+		}
+	}
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (m *memWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain.ReadingStatus) ([]domain.WishlistItem, error) {
-	var res []domain.WishlistItem
+	res := make([]domain.WishlistItem, 0)
 	for _, it := range m.items {
-		res = append(res, *it)
+		if it.UserID == uID {
+			if s == nil || it.Status == *s {
+				res = append(res, *it)
+			}
+		}
 	}
 	return res, nil
 }
@@ -237,6 +251,8 @@ func (m *memWishlistRepo) Update(ctx context.Context, item *domain.WishlistItem)
 	return nil
 }
 func (m *memWishlistRepo) Delete(ctx context.Context, id, uID string) error {
-	delete(m.items, id)
+	if it, ok := m.items[id]; ok && it.UserID == uID {
+		delete(m.items, id)
+	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/adityapandeydev/imprint/backend/internal/app"
+	"github.com/adityapandeydev/imprint/backend/internal/domain"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -37,6 +38,9 @@ func (h *CatalogHandler) Search(w http.ResponseWriter, r *http.Request) {
 		Error(w, r, err)
 		return
 	}
+	if works == nil {
+		works = make([]domain.Work, 0)
+	}
 
 	JSON(w, http.StatusOK, works)
 }
@@ -52,6 +56,9 @@ func (h *CatalogHandler) GetBook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		Error(w, r, err)
 		return
+	}
+	if editions == nil {
+		editions = make([]domain.Edition, 0)
 	}
 
 	response := struct {

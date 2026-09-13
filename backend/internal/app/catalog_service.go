@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 )
@@ -13,6 +14,7 @@ type CatalogService struct {
 	provider    domain.BookProvider
 	workRepo    domain.WorkRepository
 	editionRepo domain.EditionRepository
+	searchCache sync.Map
 }
 
 // NewCatalogService initializes a CatalogService.
@@ -29,7 +31,7 @@ func NewCatalogService(
 }
 
 // Search queries both local catalog and the external metadata provider,
-// returning normalized, deduplicated works without polluting PostgreSQL with transient results.
+// returning normalized, deduplicated works with fast in-memory caching.
 func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([]domain.Work, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
@@ -37,6 +39,11 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 	}
 	if limit <= 0 {
 		limit = 20
+	}
+
+	cacheKey := fmt.Sprintf("%s:%d", strings.ToLower(trimmed), limit)
+	if cached, ok := s.searchCache.Load(cacheKey); ok {
+		return cached.([]domain.Work), nil
 	}
 
 	// 1. Check local catalog first
@@ -77,6 +84,12 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 			break
 		}
 	}
+
+	// Cache discovered works locally so later GetWork and AddToWishlist have immediate access
+	for i := range combined {
+		_ = s.workRepo.SaveWork(ctx, &combined[i])
+	}
+	s.searchCache.Store(cacheKey, combined)
 
 	return combined, nil
 }
