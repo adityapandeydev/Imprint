@@ -16,6 +16,8 @@ import (
 	"github.com/adityapandeydev/imprint/backend/internal/app"
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 	"github.com/adityapandeydev/imprint/backend/internal/infra/postgres"
+	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/composite"
+	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/googlebooks"
 	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/openlibrary"
 	"github.com/joho/godotenv"
 )
@@ -104,10 +106,15 @@ func main() {
 		wishlistRepo = &memWishlistRepo{items: make(map[string]*domain.WishlistItem)}
 	}
 
-	// 4. External Book Provider Setup
-	provider := openlibrary.NewClient(
+	// 4. External Book Provider Setup (Open Library + Google Books Hybrid MultiProvider)
+	olClient := openlibrary.NewClient(
 		openlibrary.WithBaseURL(os.Getenv("OPEN_LIBRARY_BASE_URL")),
 	)
+	gbClient := googlebooks.NewClient(
+		googlebooks.WithBaseURL(os.Getenv("GOOGLE_BOOKS_BASE_URL")),
+		googlebooks.WithAPIKey(os.Getenv("GOOGLE_BOOKS_API_KEY")),
+	)
+	provider := composite.NewMultiProvider(olClient, gbClient)
 
 	// 5. Application Services Setup
 	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo)

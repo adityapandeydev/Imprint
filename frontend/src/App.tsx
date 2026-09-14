@@ -281,7 +281,7 @@ function ImprintApp() {
                         Live Catalog & Edition Architecture
                       </h2>
                       <p className="text-xs text-text-muted">
-                        Connected to Go REST API & Open Library Provider with Neon PostgreSQL caching
+                        Connected to Go REST API with Open Library & Google Books hybrid providers and Neon PostgreSQL caching
                       </p>
                     </div>
                   </div>
