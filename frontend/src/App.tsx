@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   QueryClient,
   QueryClientProvider,
@@ -30,15 +30,75 @@ const queryClient = new QueryClient({
   },
 });
 
+function getInitialTab(): 'discover' | 'collection' {
+  if (typeof window === 'undefined') return 'discover';
+  const hash = window.location.hash.toLowerCase();
+  if (hash === '#collection') return 'collection';
+  if (hash === '#discover') return 'discover';
+  try {
+    const saved = localStorage.getItem('imprint_active_tab');
+    if (saved === 'collection' || saved === 'discover') return saved;
+  } catch {
+    // Storage access might fail in restricted iframe / sandbox
+  }
+  return 'discover';
+}
+
 function ImprintApp() {
   const { user, isAuthenticated, openAuthModal } = useAuth();
-  const [activeTab, setActiveTab] = useState<'discover' | 'collection'>('discover');
+  const [activeTab, setActiveTab] = useState<'discover' | 'collection'>(getInitialTab);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWork, setSelectedWork] = useState<Work | null>(null);
   const [activeWishlistItem, setActiveWishlistItem] = useState<WishlistItem | null>(null);
   const [isEditionModalOpen, setIsEditionModalOpen] = useState(false);
 
   const queryClientInstance = useQueryClient();
+
+  const switchTab = useCallback((tab: 'discover' | 'collection') => {
+    setActiveTab(tab);
+    try {
+      localStorage.setItem('imprint_active_tab', tab);
+    } catch {
+      // Ignore
+    }
+    const targetHash = tab === 'collection' ? '#collection' : '#discover';
+    if (window.location.hash.toLowerCase() !== targetHash) {
+      window.history.replaceState(null, '', targetHash);
+    }
+  }, []);
+
+  // Listen for browser Back/Forward and manual URL hash modifications
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const hash = window.location.hash.toLowerCase();
+      if (hash === '#collection') {
+        setActiveTab('collection');
+        try {
+          localStorage.setItem('imprint_active_tab', 'collection');
+        } catch {}
+      } else if (hash === '#discover' || hash === '' || hash === '#') {
+        setActiveTab('discover');
+        try {
+          localStorage.setItem('imprint_active_tab', 'discover');
+        } catch {}
+      }
+    };
+
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+
+    // Keep URL in sync with restored active tab if no hash was set
+    const currentHash = window.location.hash.toLowerCase();
+    if (!currentHash) {
+      const initialHash = activeTab === 'collection' ? '#collection' : '#discover';
+      window.history.replaceState(null, '', initialHash);
+    }
+
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
+  }, [activeTab]);
 
   // 1. Query user wishlist collection (Strictly behind authentication)
   const { data: rawWishlist = [], isLoading: isWishlistLoading } = useQuery({
@@ -160,27 +220,77 @@ function ImprintApp() {
     }) => {
       return api.updateWishlistItem(variables.id, variables);
     },
-    onSuccess: (updated) => {
-      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist'], (old = []) =>
-        old.map((it) => (it.id === updated.id ? { ...it, ...updated } : it))
+    onMutate: async (variables) => {
+      // 1. Cancel in-flight wishlist queries so background fetches don't overwrite optimistic updates
+      await queryClientInstance.cancelQueries({ queryKey: ['wishlist', user?.id] });
+
+      // 2. Snapshot current state for rollback on error
+      const previousWishlist =
+        queryClientInstance.getQueryData<WishlistItem[]>(['wishlist', user?.id]) || [];
+
+      // 3. Apply optimistic update in 0ms directly to cache
+      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist', user?.id], (old = []) =>
+        old.map((item) => {
+          if (item.id !== variables.id) return item;
+          return {
+            ...item,
+            ...(variables.priority !== undefined ? { priority: variables.priority } : {}),
+            ...(variables.status !== undefined ? { status: variables.status } : {}),
+            ...(variables.rating !== undefined ? { rating: variables.rating } : {}),
+            ...(variables.notes !== undefined ? { notes: variables.notes } : {}),
+            ...(variables.edition_id !== undefined ? { edition_id: variables.edition_id } : {}),
+            updated_at: new Date().toISOString(),
+          };
+        })
       );
-      queryClientInstance.invalidateQueries({ queryKey: ['wishlist'] });
+
+      return { previousWishlist };
     },
-    onError: (err: Error) => {
+    onSuccess: (updated) => {
+      // Reconcile cache with confirmed server payload (preserving existing work/edition objects)
+      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist', user?.id], (old = []) =>
+        old.map((it) => {
+          if (it.id !== updated.id) return it;
+          return {
+            ...it,
+            ...updated,
+            work: updated.work || it.work,
+            edition: updated.edition || it.edition,
+          };
+        })
+      );
+      // NOTE: Do not call invalidateQueries here. A remote refetch over the network would wipe
+      // optimistic state and disrupt smooth layout reordering animations.
+    },
+    onError: (err: Error, _variables, context) => {
+      if (context?.previousWishlist) {
+        queryClientInstance.setQueryData(['wishlist', user?.id], context.previousWishlist);
+      }
       toast.error('Failed to update item', err.message);
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteWishlistItem(id),
-    onSuccess: (_, deletedId) => {
-      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist'], (old = []) =>
+    onMutate: async (deletedId) => {
+      await queryClientInstance.cancelQueries({ queryKey: ['wishlist', user?.id] });
+      const previousWishlist =
+        queryClientInstance.getQueryData<WishlistItem[]>(['wishlist', user?.id]) || [];
+
+      // Optimistically remove from collection in 0ms
+      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist', user?.id], (old = []) =>
         old.filter((it) => it.id !== deletedId)
       );
-      queryClientInstance.invalidateQueries({ queryKey: ['wishlist'] });
+
+      return { previousWishlist };
+    },
+    onSuccess: () => {
       toast.info('Removed from collection');
     },
-    onError: (err: Error) => {
+    onError: (err: Error, _deletedId, context) => {
+      if (context?.previousWishlist) {
+        queryClientInstance.setQueryData(['wishlist', user?.id], context.previousWishlist);
+      }
       toast.error('Failed to remove item', err.message);
     },
   });
@@ -198,7 +308,7 @@ function ImprintApp() {
       Boolean(work.open_library_work_id && collectionWorkIds.has(work.open_library_work_id));
 
     if (isSaved) {
-      setActiveTab('collection');
+      switchTab('collection');
       toast.info('Opening book in collection', work.title);
     } else {
       addMutation.mutate({ work });
@@ -244,7 +354,7 @@ function ImprintApp() {
     <div className="min-h-screen flex flex-col bg-canvas text-text-main transition-colors duration-200">
       <Navbar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={switchTab}
         collectionCount={wishlistItems.length}
       />
 
@@ -365,7 +475,7 @@ function ImprintApp() {
                 onUpdateRating={(id, rating) => updateMutation.mutate({ id, rating })}
                 onUpdateNotes={(id, notes) => updateMutation.mutate({ id, notes })}
                 onDelete={(id) => deleteMutation.mutate(id)}
-                onGoToDiscover={() => setActiveTab('discover')}
+                onGoToDiscover={() => switchTab('discover')}
                 onInspectEditions={handleInspectWishlistEditions}
               />
             </motion.section>

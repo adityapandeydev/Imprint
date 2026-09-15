@@ -106,6 +106,7 @@ export interface RegisterRequest {
 
 export interface LoginRequest {
   login: string;
+  email_or_username?: string;
   password: string;
 }
 

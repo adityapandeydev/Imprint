@@ -268,17 +268,6 @@ func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWish
 		return nil, fmt.Errorf("updating wishlist item: %w", err)
 	}
 
-	res, err := s.wishlistRepo.GetByID(ctx, item.ID)
-	if err == nil {
-		if res.Work == nil {
-			res.Work = item.Work
-		}
-		if res.Edition == nil {
-			res.Edition = item.Edition
-		}
-		return res, nil
-	}
-
 	return item, nil
 }
 

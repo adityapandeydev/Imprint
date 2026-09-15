@@ -61,8 +61,12 @@ export const WishlistCard: React.FC<WishlistCardProps> = ({
       initial={{ opacity: 0, y: 15 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      transition={{ duration: 0.2 }}
-      className="bg-surface rounded-2xl border border-border-subtle hover:border-accent/30 p-4 sm:p-5 shadow-xs hover:shadow-book transition-all space-y-4"
+      transition={{
+        layout: { type: 'spring', stiffness: 350, damping: 28 },
+        opacity: { duration: 0.2 },
+        scale: { duration: 0.2 },
+      }}
+      className="bg-surface rounded-2xl border border-border-subtle hover:border-accent/30 p-4 sm:p-5 shadow-xs hover:shadow-book transition-colors duration-200 space-y-4"
     >
       <div className="flex gap-4 sm:gap-5 items-start">
         {/* Cover Thumbnail */}

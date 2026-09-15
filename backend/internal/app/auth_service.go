@@ -39,6 +39,7 @@ type RegisterRequest struct {
 // LoginRequest contains credentials for authenticating an existing reader.
 type LoginRequest struct {
 	EmailOrUsername string `json:"email_or_username"`
+	Login           string `json:"login"`
 	Password        string `json:"password"`
 }
 
@@ -95,6 +96,9 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest) (*domai
 // Login verifies reader credentials and returns a signed JWT session token.
 func (s *AuthService) Login(ctx context.Context, req LoginRequest) (*domain.AuthTokens, error) {
 	cleanIdentifier := strings.TrimSpace(req.EmailOrUsername)
+	if cleanIdentifier == "" {
+		cleanIdentifier = strings.TrimSpace(req.Login)
+	}
 	if cleanIdentifier == "" || req.Password == "" {
 		return nil, domain.ErrInvalidCredentials
 	}

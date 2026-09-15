@@ -40,9 +40,67 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
   onGoToDiscover,
   onInspectEditions,
 }) => {
-  const { isAuthenticated, openAuthModal } = useAuth();
+  const { isAuthenticated, isLoading: isAuthLoading, openAuthModal } = useAuth();
   const [activeFilter, setActiveFilter] = useState<FilterOption>('ALL');
   const [sortBy, setSortBy] = useState<SortOption>('priority');
+
+  // Count items per filter tab (Unconditionally declared to follow React Rules of Hooks)
+  const counts = useMemo(() => {
+    return {
+      ALL: items.length,
+      WANT_TO_READ: items.filter((i) => i.status === 'WANT_TO_READ').length,
+      CURRENTLY_READING: items.filter((i) => i.status === 'CURRENTLY_READING').length,
+      FINISHED: items.filter((i) => i.status === 'FINISHED').length,
+      ABANDONED: items.filter((i) => i.status === 'ABANDONED').length,
+    };
+  }, [items]);
+
+  // Filtered and sorted items (Unconditionally declared to follow React Rules of Hooks)
+  const displayItems = useMemo(() => {
+    let list = items;
+    if (activeFilter !== 'ALL') {
+      list = list.filter((item) => item.status === activeFilter);
+    }
+
+    return [...list].sort((a, b) => {
+      if (sortBy === 'priority') {
+        const diff = (b.priority || 0) - (a.priority || 0);
+        if (diff !== 0) return diff;
+        const dateA = new Date(a.created_at).getTime();
+        const dateB = new Date(b.created_at).getTime();
+        return dateB - dateA;
+      }
+      if (sortBy === 'title') {
+        const titleA = a.work?.title || '';
+        const titleB = b.work?.title || '';
+        return titleA.localeCompare(titleB);
+      }
+      // 'newest'
+      const dateA = new Date(a.created_at).getTime();
+      const dateB = new Date(b.created_at).getTime();
+      return dateB - dateA;
+    });
+  }, [items, activeFilter, sortBy]);
+
+  if (isAuthLoading) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 pt-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div
+            key={i}
+            className="bg-surface rounded-2xl border border-border-subtle p-5 animate-pulse flex gap-4"
+          >
+            <div className="w-16 sm:w-20 aspect-[2/3] bg-surface-hover rounded-xl shrink-0" />
+            <div className="flex-1 space-y-3 pt-1">
+              <div className="h-4 bg-surface-hover rounded w-3/4" />
+              <div className="h-3 bg-surface-hover rounded w-1/2" />
+              <div className="h-6 bg-surface-hover rounded-lg w-1/3 mt-3" />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -101,40 +159,6 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
       </div>
     );
   }
-
-  // Count items per filter tab
-  const counts = useMemo(() => {
-    return {
-      ALL: items.length,
-      WANT_TO_READ: items.filter((i) => i.status === 'WANT_TO_READ').length,
-      CURRENTLY_READING: items.filter((i) => i.status === 'CURRENTLY_READING').length,
-      FINISHED: items.filter((i) => i.status === 'FINISHED').length,
-      ABANDONED: items.filter((i) => i.status === 'ABANDONED').length,
-    };
-  }, [items]);
-
-  // Filtered and sorted items
-  const displayItems = useMemo(() => {
-    let list = items;
-    if (activeFilter !== 'ALL') {
-      list = list.filter((item) => item.status === activeFilter);
-    }
-
-    return [...list].sort((a, b) => {
-      if (sortBy === 'priority') {
-        return (b.priority || 0) - (a.priority || 0);
-      }
-      if (sortBy === 'title') {
-        const titleA = a.work?.title || '';
-        const titleB = b.work?.title || '';
-        return titleA.localeCompare(titleB);
-      }
-      // 'newest'
-      const dateA = new Date(a.created_at).getTime();
-      const dateB = new Date(b.created_at).getTime();
-      return dateB - dateA;
-    });
-  }, [items, activeFilter, sortBy]);
 
   const filterTabs: { id: FilterOption; label: string }[] = [
     { id: 'ALL', label: 'All Books' },
@@ -259,8 +283,8 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
         </div>
       ) : (
         /* Populated Shelf Grid */
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-          <AnimatePresence mode="popLayout">
+        <motion.div layout className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+          <AnimatePresence>
             {displayItems.map((item) => (
               <WishlistCard
                 key={item.id}
@@ -274,7 +298,7 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
               />
             ))}
           </AnimatePresence>
-        </div>
+        </motion.div>
       )}
     </div>
   );

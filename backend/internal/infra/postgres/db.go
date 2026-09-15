@@ -54,6 +54,8 @@ func NewDB(ctx context.Context, cfg Config) (*DB, error) {
 		poolConfig.MaxConnIdleTime = 5 * time.Minute
 	}
 
+	poolConfig.HealthCheckPeriod = 30 * time.Second
+
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating pgx connection pool: %w", err)

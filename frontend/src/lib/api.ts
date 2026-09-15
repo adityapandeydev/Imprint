@@ -96,11 +96,16 @@ export const api = {
 
   // Auth: Log in existing user
   async login(req: LoginRequest): Promise<AuthTokens> {
+    const payload = {
+      login: req.login,
+      email_or_username: req.email_or_username || req.login,
+      password: req.password,
+    };
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(req),
+      body: JSON.stringify(payload),
     });
     const tokens = await handleResponse<AuthTokens>(res);
     if (tokens?.access_token) {
