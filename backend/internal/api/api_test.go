@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/adityapandeydev/imprint/backend/internal/app"
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
+	"github.com/adityapandeydev/imprint/backend/internal/infra/security"
 )
 
 // In-memory test doubles for HTTP tests
@@ -63,17 +66,39 @@ func (r *testWorkRepo) SearchLocalWorks(ctx context.Context, query string, limit
 	return nil, nil
 }
 
-type testEditionRepo struct{}
+type testEditionRepo struct {
+	editions map[string]*domain.Edition
+}
 
-func (r *testEditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) error { return nil }
+func (r *testEditionRepo) SaveEdition(ctx context.Context, e *domain.Edition) error {
+	if r.editions == nil {
+		r.editions = make(map[string]*domain.Edition)
+	}
+	r.editions[e.ID] = e
+	return nil
+}
 func (r *testEditionRepo) GetEditionByID(ctx context.Context, id string) (*domain.Edition, error) {
-	return &domain.Edition{ID: id, Title: "Edition"}, nil
+	if e, ok := r.editions[id]; ok {
+		return e, nil
+	}
+	return nil, domain.ErrEditionNotFound
 }
 func (r *testEditionRepo) GetEditionByISBN(ctx context.Context, isbn string) (*domain.Edition, error) {
+	for _, e := range r.editions {
+		if e.ISBN13 != nil && *e.ISBN13 == isbn {
+			return e, nil
+		}
+	}
 	return nil, domain.ErrEditionNotFound
 }
 func (r *testEditionRepo) GetEditionsByWorkID(ctx context.Context, workID string) ([]domain.Edition, error) {
-	return nil, nil
+	var res []domain.Edition
+	for _, e := range r.editions {
+		if e.WorkID == workID {
+			res = append(res, *e)
+		}
+	}
+	return res, nil
 }
 
 type testWishlistRepo struct {
@@ -94,12 +119,19 @@ func (r *testWishlistRepo) GetByID(ctx context.Context, id string) (*domain.Wish
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (r *testWishlistRepo) GetByUserAndWork(ctx context.Context, uID, wID string) (*domain.WishlistItem, error) {
+	for _, it := range r.items {
+		if it.UserID == uID && it.WorkID == wID {
+			return it, nil
+		}
+	}
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (r *testWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain.ReadingStatus) ([]domain.WishlistItem, error) {
 	var res []domain.WishlistItem
 	for _, it := range r.items {
-		res = append(res, *it)
+		if it.UserID == uID {
+			res = append(res, *it)
+		}
 	}
 	return res, nil
 }
@@ -112,28 +144,87 @@ func (r *testWishlistRepo) Delete(ctx context.Context, id, uID string) error {
 	return nil
 }
 
-func setupTestRouter() http.Handler {
+type testUserRepo struct {
+	users map[string]*domain.User
+}
+
+func (r *testUserRepo) CreateUser(ctx context.Context, email, username, displayName, passwordHash string) (*domain.User, error) {
+	for _, u := range r.users {
+		if strings.EqualFold(u.Email, email) {
+			return nil, domain.ErrEmailAlreadyExists
+		}
+		if strings.EqualFold(u.Username, username) {
+			return nil, domain.ErrUsernameAlreadyExists
+		}
+	}
+	u := &domain.User{
+		ID:           "u-" + username,
+		Email:        email,
+		Username:     username,
+		DisplayName:  displayName,
+		PasswordHash: passwordHash,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	r.users[u.ID] = u
+	return u, nil
+}
+func (r *testUserRepo) GetByID(ctx context.Context, id string) (*domain.User, error) {
+	if u, ok := r.users[id]; ok {
+		return u, nil
+	}
+	return nil, domain.ErrUserNotFound
+}
+func (r *testUserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+	for _, u := range r.users {
+		if strings.EqualFold(u.Email, email) {
+			return u, nil
+		}
+	}
+	return nil, domain.ErrUserNotFound
+}
+func (r *testUserRepo) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
+	for _, u := range r.users {
+		if strings.EqualFold(u.Username, username) {
+			return u, nil
+		}
+	}
+	return nil, domain.ErrUserNotFound
+}
+func (r *testUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, error) {
+	return &domain.User{ID: "00000000-0000-0000-0000-000000000001", Email: "reader@imprint.app", Username: "reader"}, nil
+}
+
+func setupTestRouter() (http.Handler, *security.JWTService) {
 	workRepo := &testWorkRepo{works: map[string]*domain.Work{
 		"w-1": {ID: "w-1", Title: "The Hobbit", OpenLibraryWorkID: "OL27479W"},
 	}}
 	editionRepo := &testEditionRepo{}
 	wishlistRepo := &testWishlistRepo{items: make(map[string]*domain.WishlistItem)}
+	userRepo := &testUserRepo{users: make(map[string]*domain.User)}
 	provider := &testProvider{}
 
+	jwtSvc := security.NewJWTService("test-secret-12345", 2*time.Hour)
+	authSvc := app.NewAuthService(userRepo, jwtSvc)
 	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo)
 	wishlistSvc := app.NewWishlistService(wishlistRepo, catalogSvc, workRepo, editionRepo)
 
+	authHandler := NewAuthHandler(authSvc)
 	catalogHandler := NewCatalogHandler(catalogSvc)
 	wishlistHandler := NewWishlistHandler(wishlistSvc)
 
-	return NewRouter(RouterConfig{
+	router := NewRouter(RouterConfig{
 		CatalogHandler:  catalogHandler,
 		WishlistHandler: wishlistHandler,
+		AuthHandler:     authHandler,
+		JWTService:      jwtSvc,
 	})
+
+	return router, jwtSvc
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	router := setupTestRouter()
+	router, _ := setupTestRouter()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 
@@ -154,7 +245,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestSearchBooksEndpoint(t *testing.T) {
-	router := setupTestRouter()
+	router, _ := setupTestRouter()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/books/search?q=Hobbit", nil)
 	rec := httptest.NewRecorder()
 
@@ -176,57 +267,203 @@ func TestSearchBooksEndpoint(t *testing.T) {
 	}
 }
 
-func TestGetBookEndpoint_NotFound(t *testing.T) {
-	router := setupTestRouter()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/books/not-found", nil)
-	rec := httptest.NewRecorder()
+func TestAuthEndpoints_RegisterLoginAndMe(t *testing.T) {
+	router, _ := setupTestRouter()
 
-	router.ServeHTTP(rec, req)
+	// 1. Register new user
+	regPayload := []byte(`{
+		"email": "reader@example.com",
+		"username": "reader1",
+		"display_name": "Avid Reader",
+		"password": "Password123!"
+	}`)
+	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regPayload))
+	regReq.Header.Set("Content-Type", "application/json")
+	regRec := httptest.NewRecorder()
+	router.ServeHTTP(regRec, regReq)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 Not Found, got %d", rec.Code)
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on register, got %d: %s", regRec.Code, regRec.Body.String())
 	}
 
-	var errResp ErrorResponse
-	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
-		t.Fatalf("failed to decode error json: %v", err)
+	var regResp struct {
+		Data domain.AuthTokens `json:"data"`
+	}
+	if err := json.NewDecoder(regRec.Body).Decode(&regResp); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+	token := regResp.Data.AccessToken
+	if token == "" {
+		t.Fatalf("expected access token in register response")
 	}
 
-	if errResp.Error.Code != "NOT_FOUND" {
-		t.Errorf("expected code NOT_FOUND, got %s", errResp.Error.Code)
+	// 2. Access /auth/me with valid Bearer token
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+token)
+	meRec := httptest.NewRecorder()
+	router.ServeHTTP(meRec, meReq)
+
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /auth/me with valid token, got %d: %s", meRec.Code, meRec.Body.String())
+	}
+
+	// 3. Access /auth/me without token -> MUST be 401 Unauthorized
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	unauthRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthRec, unauthReq)
+
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on /auth/me without token, got %d", unauthRec.Code)
+	}
+
+	// 4. Login with correct credentials
+	loginPayload := []byte(`{
+		"email_or_username": "reader@example.com",
+		"password": "Password123!"
+	}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginPayload))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	router.ServeHTTP(loginRec, loginReq)
+
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on login, got %d", loginRec.Code)
+	}
+
+	// 5. Login with wrong password
+	badLoginPayload := []byte(`{
+		"email_or_username": "reader@example.com",
+		"password": "WrongPassword!"
+	}`)
+	badLoginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(badLoginPayload))
+	badLoginReq.Header.Set("Content-Type", "application/json")
+	badLoginRec := httptest.NewRecorder()
+	router.ServeHTTP(badLoginRec, badLoginReq)
+
+	if badLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on bad login, got %d", badLoginRec.Code)
 	}
 }
 
-func TestWishlistLifecycle(t *testing.T) {
-	router := setupTestRouter()
+func TestWishlistEndpoints_StrictRouteProtection(t *testing.T) {
+	router, jwtSvc := setupTestRouter()
 
-	// 1. Add item to wishlist
-	payload := []byte(`{"work_id": "w-1", "priority": 4, "notes": "Reading soon"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/wishlist", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+	// Generate a token for test user
+	user := &domain.User{
+		ID:       "user-auth-uuid-999",
+		Email:    "protected@example.com",
+		Username: "protecteduser",
+	}
+	token, _, _ := jwtSvc.GenerateToken(user)
 
-	router.ServeHTTP(rec, req)
+	// =========================================================================
+	// 1. VERIFY UNAUTHORIZED REQUESTS ARE STRICTLY REJECTED (401 Unauthorized)
+	// =========================================================================
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 Created, got %d: %s", rec.Code, rec.Body.String())
+	// Unauthenticated GET /wishlist
+	unauthGetReq := httptest.NewRequest(http.MethodGet, "/api/v1/wishlist", nil)
+	unauthGetRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthGetRec, unauthGetReq)
+	if unauthGetRec.Code != http.StatusUnauthorized {
+		t.Fatalf("CRITICAL SECURITY FAILURE: expected 401 Unauthorized on unauthenticated GET /wishlist, got %d", unauthGetRec.Code)
 	}
 
-	// 2. List wishlist
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/wishlist", nil)
-	listRec := httptest.NewRecorder()
-	router.ServeHTTP(listRec, listReq)
-
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on list, got %d", listRec.Code)
+	// Unauthenticated POST /wishlist
+	unauthPostReq := httptest.NewRequest(http.MethodPost, "/api/v1/wishlist", bytes.NewReader([]byte(`{"work_id":"w-1"}`)))
+	unauthPostReq.Header.Set("Content-Type", "application/json")
+	unauthPostRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthPostRec, unauthPostReq)
+	if unauthPostRec.Code != http.StatusUnauthorized {
+		t.Fatalf("CRITICAL SECURITY FAILURE: expected 401 Unauthorized on unauthenticated POST /wishlist, got %d", unauthPostRec.Code)
 	}
 
-	// 3. Delete from wishlist
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/wishlist/test-item-uuid", nil)
-	delRec := httptest.NewRecorder()
-	router.ServeHTTP(delRec, delReq)
+	// Unauthenticated PATCH /wishlist/{id}
+	unauthPatchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/wishlist/item-123", bytes.NewReader([]byte(`{"priority":5}`)))
+	unauthPatchReq.Header.Set("Content-Type", "application/json")
+	unauthPatchRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthPatchRec, unauthPatchReq)
+	if unauthPatchRec.Code != http.StatusUnauthorized {
+		t.Fatalf("CRITICAL SECURITY FAILURE: expected 401 Unauthorized on unauthenticated PATCH /wishlist, got %d", unauthPatchRec.Code)
+	}
 
-	if delRec.Code != http.StatusNoContent {
-		t.Fatalf("expected 204 No Content, got %d", delRec.Code)
+	// Unauthenticated DELETE /wishlist/{id}
+	unauthDelReq := httptest.NewRequest(http.MethodDelete, "/api/v1/wishlist/item-123", nil)
+	unauthDelRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthDelRec, unauthDelReq)
+	if unauthDelRec.Code != http.StatusUnauthorized {
+		t.Fatalf("CRITICAL SECURITY FAILURE: expected 401 Unauthorized on unauthenticated DELETE /wishlist, got %d", unauthDelRec.Code)
+	}
+
+	// =========================================================================
+	// 2. VERIFY AUTHENTICATED REQUESTS SUCCEED (200 / 201)
+	// =========================================================================
+
+	// Authenticated POST /wishlist
+	authPostReq := httptest.NewRequest(http.MethodPost, "/api/v1/wishlist", bytes.NewReader([]byte(`{"work_id": "w-1", "priority": 4}`)))
+	authPostReq.Header.Set("Content-Type", "application/json")
+	authPostReq.Header.Set("Authorization", "Bearer "+token)
+	authPostRec := httptest.NewRecorder()
+	router.ServeHTTP(authPostRec, authPostReq)
+
+	if authPostRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on authenticated POST /wishlist, got %d: %s", authPostRec.Code, authPostRec.Body.String())
+	}
+
+	// Authenticated GET /wishlist
+	authGetReq := httptest.NewRequest(http.MethodGet, "/api/v1/wishlist", nil)
+	authGetReq.Header.Set("Authorization", "Bearer "+token)
+	authGetRec := httptest.NewRecorder()
+	router.ServeHTTP(authGetRec, authGetReq)
+
+	if authGetRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on authenticated GET /wishlist, got %d: %s", authGetRec.Code, authGetRec.Body.String())
+	}
+
+	// Authenticated DELETE /wishlist/{id}
+	authDelReq := httptest.NewRequest(http.MethodDelete, "/api/v1/wishlist/test-item-uuid", nil)
+	authDelReq.Header.Set("Authorization", "Bearer "+token)
+	authDelRec := httptest.NewRecorder()
+	router.ServeHTTP(authDelRec, authDelReq)
+
+	if authDelRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content on authenticated DELETE, got %d", authDelRec.Code)
+	}
+}
+
+func TestGetBookEndpoint_WithEditions(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	// 1. Search first (which caches the work in the repository without editions)
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/search?q=Hobbit", nil)
+	searchRec := httptest.NewRecorder()
+	router.ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on search, got %d", searchRec.Code)
+	}
+
+	// 2. Fetch book details by ID
+	bookReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/w-1", nil)
+	bookRec := httptest.NewRecorder()
+	router.ServeHTTP(bookRec, bookReq)
+
+	if bookRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /books/w-1, got %d: %s", bookRec.Code, bookRec.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			Work     domain.Work      `json:"work"`
+			Editions []domain.Edition `json:"editions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(bookRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode get book response: %v", err)
+	}
+
+	if resp.Data.Work.Title != "The Hobbit" {
+		t.Errorf("expected title 'The Hobbit', got '%s'", resp.Data.Work.Title)
+	}
+	if len(resp.Data.Editions) == 0 {
+		t.Errorf("expected published editions to be resolved and returned, got 0")
 	}
 }

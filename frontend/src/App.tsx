@@ -12,7 +12,9 @@ import { SearchBar } from './components/SearchBar';
 import { BookGrid } from './components/BookGrid';
 import { EditionModal } from './components/EditionModal';
 import { CollectionView } from './components/CollectionView';
+import { AuthModal } from './components/AuthModal';
 import { ToastContainer } from './components/Toast';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { api } from './lib/api';
 import { toast } from './lib/toast';
 import { Sparkles, Layers, Search, ShieldCheck } from 'lucide-react';
@@ -29,6 +31,7 @@ const queryClient = new QueryClient({
 });
 
 function ImprintApp() {
+  const { user, isAuthenticated, openAuthModal } = useAuth();
   const [activeTab, setActiveTab] = useState<'discover' | 'collection'>('discover');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWork, setSelectedWork] = useState<Work | null>(null);
@@ -37,25 +40,13 @@ function ImprintApp() {
 
   const queryClientInstance = useQueryClient();
 
-  // 1. Backend server health check
-  const { data: healthData, isError: isHealthError } = useQuery({
-    queryKey: ['health'],
-    queryFn: api.checkHealth,
-    refetchInterval: 30000,
-  });
-
-  const serverStatus = isHealthError
-    ? 'disconnected'
-    : healthData
-    ? 'connected'
-    : 'checking';
-
-  // 2. Query user wishlist collection
+  // 1. Query user wishlist collection (Strictly behind authentication)
   const { data: rawWishlist = [], isLoading: isWishlistLoading } = useQuery({
-    queryKey: ['wishlist'],
+    queryKey: ['wishlist', user?.id],
     queryFn: () => api.getWishlist(),
+    enabled: isAuthenticated,
   });
-  const wishlistItems = Array.isArray(rawWishlist) ? rawWishlist : [];
+  const wishlistItems = isAuthenticated && Array.isArray(rawWishlist) ? rawWishlist : [];
 
   // Fast lookup set of collection works
   const collectionWorkIds = useMemo(() => {
@@ -160,6 +151,12 @@ function ImprintApp() {
 
   // Handlers
   const handleToggleCollection = (work: Work) => {
+    if (!isAuthenticated) {
+      toast.info('Sign in required', 'Please sign in to save books to your collection');
+      openAuthModal('login');
+      return;
+    }
+
     const isSaved =
       Boolean(work.id && collectionWorkIds.has(work.id)) ||
       Boolean(work.open_library_work_id && collectionWorkIds.has(work.open_library_work_id));
@@ -213,7 +210,6 @@ function ImprintApp() {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         collectionCount={wishlistItems.length}
-        serverStatus={serverStatus}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
@@ -352,6 +348,11 @@ function ImprintApp() {
         wishlistItem={activeWishlistItem}
         onSelectWishlistEdition={handleSelectWishlistEdition}
         onAddEditionToWishlist={(work, edition) => {
+          if (!isAuthenticated) {
+            toast.info('Sign in required', 'Please sign in to save books to your collection');
+            openAuthModal('login');
+            return;
+          }
           addMutation.mutate({ work, edition });
         }}
         isWorkInCollection={
@@ -362,6 +363,9 @@ function ImprintApp() {
           )
         }
       />
+
+      {/* Authentication Dialog Modal */}
+      <AuthModal />
 
       {/* Global Floating Toast Container */}
       <ToastContainer />
@@ -377,7 +381,9 @@ function ImprintApp() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <ImprintApp />
+      <AuthProvider>
+        <ImprintApp />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

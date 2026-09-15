@@ -45,17 +45,21 @@ func GetRequestID(ctx context.Context) string {
 	return ""
 }
 
-// UserContextMiddleware extracts the user ID from the X-User-ID header,
-// defaulting to the seeded default development reader UUID for zero-friction local testing.
+// WithUserID returns a new context containing the given user ID.
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
+// UserContextMiddleware extracts the user ID from the X-User-ID header if provided.
 func UserContextMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("X-User-ID")
-		if userID == "" {
-			userID = postgres.DefaultUserID
+		if userID != "" {
+			ctx := WithUserID(r.Context(), userID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
-
-		ctx := context.WithValue(r.Context(), userIDKey, userID)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r)
 	})
 }
 

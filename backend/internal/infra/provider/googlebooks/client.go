@@ -3,7 +3,6 @@ package googlebooks
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -251,19 +250,24 @@ func (c *Client) GetEditionsForWork(ctx context.Context, providerWorkID string, 
 		limit = 10
 	}
 
-	// 1. First fetch target volume
-	work, err := c.GetWork(ctx, providerWorkID)
-	if err != nil {
-		if errors.Is(err, domain.ErrWorkNotFound) {
-			return nil, domain.ErrWorkNotFound
-		}
-		return nil, err
+	trimmed := strings.TrimSpace(providerWorkID)
+	if trimmed == "" {
+		return []domain.Edition{}, nil
 	}
 
-	// 2. Query other editions by title & author
-	query := fmt.Sprintf("intitle:%s", work.Title)
-	if len(work.Authors) > 0 {
-		query += fmt.Sprintf(" inauthor:%s", work.Authors[0].Name)
+	var query string
+	work, err := c.GetWork(ctx, trimmed)
+	if err == nil && work != nil {
+		query = fmt.Sprintf("intitle:%s", work.Title)
+		if len(work.Authors) > 0 {
+			query += fmt.Sprintf(" inauthor:%s", work.Authors[0].Name)
+		}
+	} else {
+		// If providerWorkID was an Open Library ID, volume lookup won't match
+		if strings.HasPrefix(trimmed, "OL") || strings.Contains(trimmed, "/works/OL") {
+			return nil, domain.ErrWorkNotFound
+		}
+		query = fmt.Sprintf("intitle:%s", trimmed)
 	}
 
 	endpoint := fmt.Sprintf("%s/volumes?q=%s&maxResults=%d",

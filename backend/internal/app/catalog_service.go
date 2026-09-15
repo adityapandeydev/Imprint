@@ -97,51 +97,64 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 // GetWork fetches a Work and its Editions.
 // If the work is not yet stored locally, it is fetched from the external provider
 // and lazily persisted into PostgreSQL (per ADR 0002).
+// If editions are not yet cached locally, they are resolved from the provider and saved.
 func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.Work, []domain.Edition, error) {
 	trimmed := strings.TrimSpace(idOrOLID)
 	if trimmed == "" {
 		return nil, nil, domain.ErrWorkNotFound
 	}
 
+	var work *domain.Work
+	var editions []domain.Edition
+	var err error
+
 	// 1. Try local lookup by UUID
-	work, err := s.workRepo.GetWorkByID(ctx, trimmed)
-	if err == nil {
-		editions, _ := s.editionRepo.GetEditionsByWorkID(ctx, work.ID)
-		return work, editions, nil
-	}
-
-	// 2. Try local lookup by Open Library ID
-	work, err = s.workRepo.GetWorkByOpenLibraryID(ctx, trimmed)
-	if err == nil {
-		editions, _ := s.editionRepo.GetEditionsByWorkID(ctx, work.ID)
-		return work, editions, nil
-	}
-
-	// 3. Fall back to external provider
-	work, err = s.provider.GetWork(ctx, trimmed)
+	work, err = s.workRepo.GetWorkByID(ctx, trimmed)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fetching work from provider: %w", err)
+		// 2. Try local lookup by Open Library ID
+		work, err = s.workRepo.GetWorkByOpenLibraryID(ctx, trimmed)
 	}
 
-	// Lazily persist the Work to PostgreSQL
-	if err := s.workRepo.SaveWork(ctx, work); err != nil {
-		return nil, nil, fmt.Errorf("persisting work to database: %w", err)
+	// 3. Fall back to external provider if not found locally
+	if err != nil || work == nil {
+		work, err = s.provider.GetWork(ctx, trimmed)
+		if err != nil {
+			return nil, nil, fmt.Errorf("fetching work from provider: %w", err)
+		}
+		// Lazily persist the Work to PostgreSQL
+		if saveErr := s.workRepo.SaveWork(ctx, work); saveErr != nil {
+			return nil, nil, fmt.Errorf("persisting work to database: %w", saveErr)
+		}
 	}
 
-	// Fetch published editions from provider and persist them
-	providerEditions, err := s.provider.GetEditionsForWork(ctx, trimmed, 20)
-	var savedEditions []domain.Edition
-	if err == nil {
-		for i := range providerEditions {
-			ed := &providerEditions[i]
-			ed.WorkID = work.ID
-			if err := s.editionRepo.SaveEdition(ctx, ed); err == nil {
-				savedEditions = append(savedEditions, *ed)
+	// 4. Retrieve editions from local storage
+	if work.ID != "" {
+		editions, _ = s.editionRepo.GetEditionsByWorkID(ctx, work.ID)
+	}
+
+	// 5. If no editions are stored locally yet, fetch from provider and cache them
+	if len(editions) == 0 {
+		lookupKey := work.OpenLibraryWorkID
+		if lookupKey == "" {
+			lookupKey = trimmed
+		}
+		providerEditions, pErr := s.provider.GetEditionsForWork(ctx, lookupKey, 20)
+		if (pErr != nil || len(providerEditions) == 0) && work.Title != "" {
+			// Secondary fallback: query editions by title
+			providerEditions, _ = s.provider.GetEditionsForWork(ctx, work.Title, 20)
+		}
+		if len(providerEditions) > 0 {
+			for i := range providerEditions {
+				ed := &providerEditions[i]
+				ed.WorkID = work.ID
+				if sErr := s.editionRepo.SaveEdition(ctx, ed); sErr == nil {
+					editions = append(editions, *ed)
+				}
 			}
 		}
 	}
 
-	return work, savedEditions, nil
+	return work, editions, nil
 }
 
 // GetEditionByISBN locates an edition by ISBN-10, ISBN-13, or ASIN.

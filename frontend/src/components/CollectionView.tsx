@@ -4,8 +4,14 @@ import {
   BookMarked,
   ArrowUpDown,
   Compass,
+  Lock,
+  LogIn,
+  UserPlus,
+  ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { WishlistCard } from './WishlistCard';
+import { useAuth } from '../context/AuthContext';
 import type { WishlistItem, ReadingStatus } from '../types/api';
 
 interface CollectionViewProps {
@@ -34,8 +40,67 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
   onGoToDiscover,
   onInspectEditions,
 }) => {
+  const { isAuthenticated, openAuthModal } = useAuth();
   const [activeFilter, setActiveFilter] = useState<FilterOption>('ALL');
   const [sortBy, setSortBy] = useState<SortOption>('priority');
+
+  if (!isAuthenticated) {
+    return (
+      <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-6">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3 }}
+          className="w-16 h-16 mx-auto rounded-2xl bg-accent-soft border border-accent/20 flex items-center justify-center text-accent shadow-xs"
+        >
+          <Lock className="w-8 h-8 text-amber-gold" />
+        </motion.div>
+        <div className="space-y-2">
+          <h2 className="font-serif text-3xl font-bold text-text-main">
+            Private Reading Collection
+          </h2>
+          <p className="text-xs sm:text-sm text-text-muted leading-relaxed max-w-md mx-auto">
+            Your personal reading shelf, custom statuses, star ratings, and private notes are protected behind authentication. Sign in to access your library.
+          </p>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+          <button
+            onClick={() => openAuthModal('login')}
+            className="w-full sm:w-auto px-6 py-3 bg-accent text-canvas font-semibold rounded-xl text-xs sm:text-sm hover:opacity-90 transition-opacity shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <LogIn className="w-4 h-4" />
+            <span>Sign In to Access</span>
+          </button>
+          <button
+            onClick={() => openAuthModal('register')}
+            className="w-full sm:w-auto px-6 py-3 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main font-semibold rounded-xl text-xs sm:text-sm transition-colors shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Create Free Account</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-6 text-left border-t border-border-subtle">
+          <div className="p-3 bg-surface rounded-xl border border-border-subtle">
+            <ShieldCheck className="w-4 h-4 text-accent mb-1" />
+            <p className="text-xs font-semibold text-text-main">Strict Isolation</p>
+            <p className="text-[11px] text-text-muted">Unique PostgreSQL collection per user</p>
+          </div>
+          <div className="p-3 bg-surface rounded-xl border border-border-subtle">
+            <Sparkles className="w-4 h-4 text-amber-gold mb-1" />
+            <p className="text-xs font-semibold text-text-main">Custom Shelves</p>
+            <p className="text-[11px] text-text-muted">Track reading, finished, and priorities</p>
+          </div>
+          <div className="p-3 bg-surface rounded-xl border border-border-subtle">
+            <Lock className="w-4 h-4 text-accent mb-1" />
+            <p className="text-xs font-semibold text-text-main">Production Auth</p>
+            <p className="text-[11px] text-text-muted">JWT + HttpOnly cookie encryption</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Count items per filter tab
   const counts = useMemo(() => {

@@ -177,3 +177,44 @@ func TestCatalogService_GetWork_LazyPersistence(t *testing.T) {
 		t.Errorf("expected Dune in local repo, got %s", saved.Title)
 	}
 }
+
+func TestCatalogService_GetWork_WhenWorkAlreadyCachedWithoutEditions(t *testing.T) {
+	workRepo := newMockWorkRepo()
+	editionRepo := newMockEditionRepo()
+
+	// Pre-seed work in local repository (simulating Search caching the work without editions)
+	_ = workRepo.SaveWork(context.Background(), &domain.Work{
+		ID:                "local-work-uuid-123",
+		Title:             "By Way of Deception",
+		OpenLibraryWorkID: "OL2287934W",
+	})
+
+	provider := &mockProvider{
+		editions: []domain.Edition{
+			{Title: "By Way of Deception (Hardcover)", Format: domain.FormatHardcover},
+			{Title: "By Way of Deception (Paperback)", Format: domain.FormatPaperback},
+		},
+	}
+
+	service := NewCatalogService(provider, workRepo, editionRepo)
+
+	// Call GetWork by local UUID
+	work, editions, err := service.GetWork(context.Background(), "local-work-uuid-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if work == nil || work.Title != "By Way of Deception" {
+		t.Errorf("expected work By Way of Deception, got %v", work)
+	}
+
+	if len(editions) != 2 {
+		t.Fatalf("expected 2 editions to be fetched and returned, got %d", len(editions))
+	}
+
+	// Verify editions were saved locally in editionRepo under work.ID
+	localEditions, err := editionRepo.GetEditionsByWorkID(context.Background(), "local-work-uuid-123")
+	if err != nil || len(localEditions) != 2 {
+		t.Errorf("expected 2 editions saved in local editionRepo, got %d (err=%v)", len(localEditions), err)
+	}
+}

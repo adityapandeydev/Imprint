@@ -39,17 +39,46 @@ func (m *MultiProvider) Name() string {
 	return fmt.Sprintf("composite(%s,%s)", pName, sName)
 }
 
+// cleanTitle normalizes titles for cross-provider matching by stripping subtitles and punctuation.
+func cleanTitle(title string) string {
+	t := strings.ToLower(strings.TrimSpace(title))
+	for _, delim := range []string{":", " - ", "—", " / "} {
+		if idx := strings.Index(t, delim); idx != -1 {
+			t = t[:idx]
+		}
+	}
+	for _, art := range []string{"the ", "a ", "an "} {
+		if strings.HasPrefix(t, art) {
+			t = strings.TrimPrefix(t, art)
+			break
+		}
+	}
+	var sb strings.Builder
+	for _, r := range t {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == ' ' {
+			sb.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(sb.String()), " ")
+}
+
+// cleanAuthor normalizes author names for cross-provider matching.
+func cleanAuthor(name string) string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(name)))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
+}
+
 // normalizeBookKey produces a deduplication key based on title and author.
 func normalizeBookKey(w domain.Work) string {
-	if w.OpenLibraryWorkID != "" {
-		return "ol:" + strings.ToLower(w.OpenLibraryWorkID)
-	}
-	title := strings.ToLower(strings.TrimSpace(w.Title))
-	author := ""
+	t := cleanTitle(w.Title)
+	a := ""
 	if len(w.Authors) > 0 {
-		author = strings.ToLower(strings.TrimSpace(w.Authors[0].Name))
+		a = cleanAuthor(w.Authors[0].Name)
 	}
-	return fmt.Sprintf("%s|%s", title, author)
+	return fmt.Sprintf("%s|%s", t, a)
 }
 
 // Search queries both providers concurrently, merges results, deduplicates,
@@ -115,7 +144,12 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 	secondaryMap := make(map[string]domain.Work)
 	for _, w := range sRes.works {
 		k := normalizeBookKey(w)
-		secondaryMap[k] = w
+		if k != "|" {
+			secondaryMap[k] = w
+		}
+		if w.OpenLibraryWorkID != "" {
+			secondaryMap["ol:"+strings.ToLower(w.OpenLibraryWorkID)] = w
+		}
 	}
 
 	var combined []domain.Work
@@ -124,7 +158,11 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 	// 1. Process primary results, enriching covers & descriptions if missing
 	for _, pw := range pRes.works {
 		k := normalizeBookKey(pw)
-		if secWork, exists := secondaryMap[k]; exists {
+		secWork, exists := secondaryMap[k]
+		if !exists && pw.OpenLibraryWorkID != "" {
+			secWork, exists = secondaryMap["ol:"+strings.ToLower(pw.OpenLibraryWorkID)]
+		}
+		if exists {
 			// Enrich cover if primary has none
 			if pw.CoverURL == "" && secWork.CoverURL != "" {
 				pw.CoverURL = secWork.CoverURL
@@ -134,8 +172,14 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 				pw.Description = secWork.Description
 			}
 		}
-		if !seen[k] {
-			seen[k] = true
+		isSeen := (k != "|" && seen[k]) || (pw.OpenLibraryWorkID != "" && seen["ol:"+strings.ToLower(pw.OpenLibraryWorkID)])
+		if !isSeen {
+			if k != "|" {
+				seen[k] = true
+			}
+			if pw.OpenLibraryWorkID != "" {
+				seen["ol:"+strings.ToLower(pw.OpenLibraryWorkID)] = true
+			}
 			combined = append(combined, pw)
 		}
 		if len(combined) >= limit {
@@ -146,8 +190,14 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 	// 2. Append remaining secondary results
 	for _, sw := range sRes.works {
 		k := normalizeBookKey(sw)
-		if !seen[k] {
-			seen[k] = true
+		isSeen := (k != "|" && seen[k]) || (sw.OpenLibraryWorkID != "" && seen["ol:"+strings.ToLower(sw.OpenLibraryWorkID)])
+		if !isSeen {
+			if k != "|" {
+				seen[k] = true
+			}
+			if sw.OpenLibraryWorkID != "" {
+				seen["ol:"+strings.ToLower(sw.OpenLibraryWorkID)] = true
+			}
 			combined = append(combined, sw)
 		}
 		if len(combined) >= limit {

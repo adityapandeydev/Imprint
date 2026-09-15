@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/composite"
 	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/googlebooks"
 	"github.com/adityapandeydev/imprint/backend/internal/infra/provider/openlibrary"
+	"github.com/adityapandeydev/imprint/backend/internal/infra/security"
 	"github.com/joho/godotenv"
 )
 
@@ -54,6 +56,7 @@ func main() {
 	// 3. PostgreSQL Database Initialization
 	var (
 		db           *postgres.DB
+		userRepo     domain.UserRepository
 		workRepo     domain.WorkRepository
 		editionRepo  domain.EditionRepository
 		wishlistRepo domain.WishlistRepository
@@ -88,7 +91,7 @@ func main() {
 			}
 
 			// Ensure default user exists
-			userRepo := postgres.NewUserRepo(db.Pool)
+			userRepo = postgres.NewUserRepo(db.Pool)
 			_, _ = userRepo.EnsureDefaultUser(context.Background())
 
 			workRepo = postgres.NewWorkRepo(db.Pool)
@@ -100,6 +103,10 @@ func main() {
 	}
 
 	// Fallback to in-memory repos if DB is not connected
+	if userRepo == nil {
+		userRepo = &memUserRepo{users: make(map[string]*domain.User)}
+		_, _ = userRepo.EnsureDefaultUser(context.Background())
+	}
 	if workRepo == nil {
 		workRepo = &memWorkRepo{works: make(map[string]*domain.Work)}
 		editionRepo = &memEditionRepo{editions: make(map[string]*domain.Edition)}
@@ -116,17 +123,22 @@ func main() {
 	)
 	provider := composite.NewMultiProvider(olClient, gbClient)
 
-	// 5. Application Services Setup
+	// 5. Application Services & Security Setup
+	jwtSvc := security.NewJWTService(os.Getenv("JWT_SECRET"), 7*24*time.Hour)
+	authSvc := app.NewAuthService(userRepo, jwtSvc)
 	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo)
 	wishlistSvc := app.NewWishlistService(wishlistRepo, catalogSvc, workRepo, editionRepo)
 
 	// 6. HTTP Handlers & Router
+	authHandler := api.NewAuthHandler(authSvc)
 	catalogHandler := api.NewCatalogHandler(catalogSvc)
 	wishlistHandler := api.NewWishlistHandler(wishlistSvc)
 
 	router := api.NewRouter(api.RouterConfig{
 		CatalogHandler:  catalogHandler,
 		WishlistHandler: wishlistHandler,
+		AuthHandler:     authHandler,
+		JWTService:      jwtSvc,
 		Logger:          logger,
 		DB:              db,
 	})
@@ -262,4 +274,71 @@ func (m *memWishlistRepo) Delete(ctx context.Context, id, uID string) error {
 		delete(m.items, id)
 	}
 	return nil
+}
+
+type memUserRepo struct {
+	users map[string]*domain.User
+}
+
+func (m *memUserRepo) CreateUser(ctx context.Context, email, username, displayName, passwordHash string) (*domain.User, error) {
+	for _, u := range m.users {
+		if strings.EqualFold(u.Email, email) {
+			return nil, domain.ErrEmailAlreadyExists
+		}
+		if strings.EqualFold(u.Username, username) {
+			return nil, domain.ErrUsernameAlreadyExists
+		}
+	}
+	u := &domain.User{
+		ID:           fmt.Sprintf("usr-%d", time.Now().UnixNano()),
+		Email:        email,
+		Username:     username,
+		DisplayName:  displayName,
+		PasswordHash: passwordHash,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	m.users[u.ID] = u
+	return u, nil
+}
+
+func (m *memUserRepo) GetByID(ctx context.Context, id string) (*domain.User, error) {
+	if u, ok := m.users[id]; ok {
+		return u, nil
+	}
+	return nil, domain.ErrUserNotFound
+}
+
+func (m *memUserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+	for _, u := range m.users {
+		if strings.EqualFold(u.Email, email) {
+			return u, nil
+		}
+	}
+	return nil, domain.ErrUserNotFound
+}
+
+func (m *memUserRepo) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
+	for _, u := range m.users {
+		if strings.EqualFold(u.Username, username) {
+			return u, nil
+		}
+	}
+	return nil, domain.ErrUserNotFound
+}
+
+func (m *memUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, error) {
+	if u, ok := m.users[postgres.DefaultUserID]; ok {
+		return u, nil
+	}
+	u := &domain.User{
+		ID:          postgres.DefaultUserID,
+		Email:       "reader@imprint.app",
+		Username:    "reader",
+		DisplayName: "Default Reader",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	m.users[u.ID] = u
+	return u, nil
 }

@@ -30,6 +30,9 @@ type WishlistRepository interface {
 
 // UserRepository defines persistence operations for User accounts.
 type UserRepository interface {
+	CreateUser(ctx context.Context, email, username, displayName, passwordHash string) (*User, error)
 	GetByID(ctx context.Context, id string) (*User, error)
+	GetByEmail(ctx context.Context, email string) (*User, error)
+	GetByUsername(ctx context.Context, username string) (*User, error)
 	EnsureDefaultUser(ctx context.Context) (*User, error)
 }

@@ -81,3 +81,31 @@ export interface ApiError {
     request_id?: string;
   };
 }
+
+export interface User {
+  id: string;
+  email: string;
+  username: string;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuthTokens {
+  access_token: string;
+  expires_at: string;
+  user: User;
+}
+
+export interface RegisterRequest {
+  email: string;
+  username: string;
+  password: string;
+  display_name?: string;
+}
+
+export interface LoginRequest {
+  login: string;
+  password: string;
+}
+

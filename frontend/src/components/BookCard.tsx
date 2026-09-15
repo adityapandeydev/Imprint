@@ -46,8 +46,8 @@ export const BookCard: React.FC<BookCardProps> = ({
           /* Stylized Literary Fallback Spine */
           <div className="w-full h-full p-4 flex flex-col justify-between bg-gradient-to-br from-surface to-accent-soft/30 border-b border-border-subtle text-text-main select-none">
             <div className="space-y-1">
-              <span className="text-[10px] font-mono tracking-widest text-text-muted uppercase">
-                Imprint Edition
+              <span className="text-[10px] font-mono tracking-widest text-text-muted/70 uppercase">
+                Cover Unavailable
               </span>
               <p className="font-serif font-bold text-sm leading-snug line-clamp-3 text-text-main">
                 {work.title}

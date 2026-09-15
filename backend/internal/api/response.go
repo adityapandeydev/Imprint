@@ -57,7 +57,19 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusBadRequest
 		code = "INVALID_ARGUMENT"
 
-	case errors.Is(err, domain.ErrDuplicateWishlistItem):
+	case errors.Is(err, domain.ErrUnauthorized),
+		errors.Is(err, domain.ErrInvalidToken),
+		errors.Is(err, domain.ErrInvalidCredentials):
+		status = http.StatusUnauthorized
+		code = "UNAUTHORIZED"
+
+	case errors.Is(err, domain.ErrForbidden):
+		status = http.StatusForbidden
+		code = "FORBIDDEN"
+
+	case errors.Is(err, domain.ErrDuplicateWishlistItem),
+		errors.Is(err, domain.ErrEmailAlreadyExists),
+		errors.Is(err, domain.ErrUsernameAlreadyExists):
 		status = http.StatusConflict
 		code = "ALREADY_EXISTS"
 
