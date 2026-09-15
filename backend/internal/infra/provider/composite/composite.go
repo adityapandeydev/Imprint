@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
@@ -99,38 +98,50 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 		err   error
 	}
 
-	var wg sync.WaitGroup
 	primChan := make(chan searchResult, 1)
 	secChan := make(chan searchResult, 1)
 
-	// Query primary provider
-	wg.Add(1)
+	// Query primary provider (Open Library) with bounded timeout
 	go func() {
-		defer wg.Done()
-		pCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pCtx, cancel := context.WithTimeout(ctx, 3500*time.Millisecond)
 		defer cancel()
 		works, err := m.primary.Search(pCtx, params)
 		primChan <- searchResult{works: works, err: err}
 	}()
 
-	// Query secondary provider
-	wg.Add(1)
+	// Query secondary provider (Google Books) with bounded timeout
 	go func() {
-		defer wg.Done()
-		sCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		sCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
 		works, err := m.secondary.Search(sCtx, params)
 		secChan <- searchResult{works: works, err: err}
 	}()
 
-	wg.Wait()
-	close(primChan)
-	close(secChan)
+	var pRes searchResult
+	var sRes searchResult
 
-	pRes := <-primChan
-	sRes := <-secChan
+	// Fast-Path Race: Don't block the reader on the slowest provider if fast results are ready
+	select {
+	case sRes = <-secChan:
+		if sRes.err == nil && len(sRes.works) >= 3 {
+			// Fast path: Google Books provided results. Give Open Library 400ms grace to enrich
+			select {
+			case pRes = <-primChan:
+			case <-time.After(400 * time.Millisecond):
+			}
+		} else {
+			pRes = <-primChan
+		}
+	case pRes = <-primChan:
+		select {
+		case sRes = <-secChan:
+		case <-time.After(350 * time.Millisecond):
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
-	// If both failed, return composite error
+	// If both failed, return error
 	if pRes.err != nil && sRes.err != nil {
 		return nil, fmt.Errorf("both providers failed: primary=%v, secondary=%v", pRes.err, sRes.err)
 	}
@@ -163,11 +174,9 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 			secWork, exists = secondaryMap["ol:"+strings.ToLower(pw.OpenLibraryWorkID)]
 		}
 		if exists {
-			// Enrich cover if primary has none
 			if pw.CoverURL == "" && secWork.CoverURL != "" {
 				pw.CoverURL = secWork.CoverURL
 			}
-			// Enrich description if primary has none
 			if pw.Description == "" && secWork.Description != "" {
 				pw.Description = secWork.Description
 			}
@@ -183,7 +192,7 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 			combined = append(combined, pw)
 		}
 		if len(combined) >= limit {
-			return combined, nil
+			break
 		}
 	}
 
@@ -203,6 +212,13 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 		if len(combined) >= limit {
 			break
 		}
+	}
+
+	// 3. Dynamic Relevance Ranking: Ensure exact title match with verified cover is Position #1!
+	combined = domain.RankWorks(combined, params.Query)
+
+	if len(combined) > limit {
+		combined = combined[:limit]
 	}
 
 	return combined, nil

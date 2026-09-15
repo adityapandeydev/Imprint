@@ -25,8 +25,16 @@ export const BookCard: React.FC<BookCardProps> = ({
 
   return (
     <motion.article
+      layout
+      layoutId={work.open_library_work_id || work.id || work.title}
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.96 }}
       whileHover={{ y: -4 }}
-      transition={{ duration: 0.2 }}
+      transition={{
+        layout: { type: 'spring', stiffness: 350, damping: 28 },
+        duration: 0.2,
+      }}
       className="group flex flex-col h-full bg-surface rounded-2xl border border-border-subtle hover:border-accent/40 shadow-xs hover:shadow-book transition-all overflow-hidden"
     >
       {/* Book Cover Container */}

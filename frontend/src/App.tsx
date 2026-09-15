@@ -59,20 +59,20 @@ function ImprintApp() {
     return set;
   }, [wishlistItems]);
 
-  // 3. Search books query
+  // 3. Search books query with AbortSignal cancellation
   const {
     data: rawSearchResults = [],
     isLoading: isSearchLoading,
     isFetching: isSearchFetching,
   } = useQuery({
     queryKey: ['books', searchQuery],
-    queryFn: () => api.searchBooks(searchQuery),
+    queryFn: ({ signal }) => api.searchBooks(searchQuery, 20, signal),
     enabled: Boolean(searchQuery.trim()),
     staleTime: 1000 * 60 * 10,
   });
   const searchResults = Array.isArray(rawSearchResults) ? rawSearchResults : [];
 
-  // 4. Wishlist Mutations
+  // 4. Wishlist Mutations (Optimistic UI: 0ms visual feedback)
   const addMutation = useMutation({
     mutationFn: (variables: { work: Work; edition?: Edition }) => {
       const workId = variables.work.id || variables.work.open_library_work_id || '';
@@ -91,20 +91,56 @@ function ImprintApp() {
         priority: 3,
       });
     },
-    onSuccess: (newItem, variables) => {
+    onMutate: async (variables) => {
+      // Cancel outgoing refetches so they don't overwrite optimistic update
+      await queryClientInstance.cancelQueries({ queryKey: ['wishlist', user?.id] });
+
+      // Snapshot previous collection
+      const previousWishlist =
+        queryClientInstance.getQueryData<WishlistItem[]>(['wishlist', user?.id]) || [];
+
+      // Create optimistic item with immediate presence in collectionWorkIds
+      const tempId = `optimistic-${Date.now()}`;
+      const optimisticItem: WishlistItem = {
+        id: tempId,
+        user_id: user?.id || 'guest',
+        work_id: variables.work.id || variables.work.open_library_work_id || tempId,
+        edition_id: variables.edition?.id,
+        status: 'WANT_TO_READ',
+        priority: 3,
+        work: variables.work,
+        edition: variables.edition,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // Instantly inject into cache: button turns green/saved in 0ms
+      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist', user?.id], (old = []) => [
+        optimisticItem,
+        ...old,
+      ]);
+
+      return { previousWishlist, tempId };
+    },
+    onSuccess: (newItem, variables, context) => {
       const resolvedItem: WishlistItem = {
         ...newItem,
         work: newItem.work || variables.work,
         edition: newItem.edition || variables.edition,
       };
-      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist'], (old = []) => [
+      // Swap out optimistic temp item with persistent server item
+      queryClientInstance.setQueryData<WishlistItem[]>(['wishlist', user?.id], (old = []) => [
         resolvedItem,
-        ...old.filter((it) => it.id !== resolvedItem.id),
+        ...old.filter((it) => it.id !== context?.tempId && it.id !== resolvedItem.id),
       ]);
-      queryClientInstance.invalidateQueries({ queryKey: ['wishlist'] });
+      queryClientInstance.invalidateQueries({ queryKey: ['wishlist', user?.id] });
       toast.success('Added to Want to Read', variables.work.title);
     },
-    onError: (err: Error, variables) => {
+    onError: (err: Error, variables, context) => {
+      // Revert optimistic change on network failure
+      if (context?.previousWishlist) {
+        queryClientInstance.setQueryData(['wishlist', user?.id], context.previousWishlist);
+      }
       if (err.message.includes('already in your collection') || err.message.includes('duplicate')) {
         toast.info('Already in your collection', variables.work.title);
       } else {

@@ -132,12 +132,13 @@ export const api = {
   },
 
   // Discover books by title, author, or keyword
-  async searchBooks(query: string, limit = 20): Promise<Work[]> {
+  async searchBooks(query: string, limit = 20, signal?: AbortSignal): Promise<Work[]> {
     if (!query.trim()) return [];
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     const res = await fetch(`${API_BASE}/books/search?${params.toString()}`, {
       headers: getAuthHeaders(),
       credentials: 'include',
+      signal,
     });
     const data = await handleResponse<Work[]>(res);
     return Array.isArray(data) ? data : [];

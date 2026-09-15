@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { BookOpen, SearchX, Sparkles } from 'lucide-react';
 import { BookCard } from './BookCard';
 import type { Work } from '../types/api';
@@ -69,7 +70,7 @@ export const BookGrid: React.FC<BookGridProps> = ({
     );
   }
 
-  // 4. Populated Grid
+  // 4. Populated Grid with fluid spring layout reordering
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between text-xs text-text-muted px-1">
@@ -80,24 +81,29 @@ export const BookGrid: React.FC<BookGridProps> = ({
         <span>Click any cover to inspect editions</span>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
-        {works.map((work) => {
-          // Identify if this work is in the collection by its ID or OpenLibrary ID
-          const isSaved =
-            Boolean(work.id && collectionWorkIds.has(work.id)) ||
-            Boolean(work.open_library_work_id && collectionWorkIds.has(work.open_library_work_id));
+      <motion.div
+        layout
+        className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6"
+      >
+        <AnimatePresence>
+          {works.map((work) => {
+            // Identify if this work is in the collection by its ID or OpenLibrary ID
+            const isSaved =
+              Boolean(work.id && collectionWorkIds.has(work.id)) ||
+              Boolean(work.open_library_work_id && collectionWorkIds.has(work.open_library_work_id));
 
-          return (
-            <BookCard
-              key={work.open_library_work_id || work.id || work.title}
-              work={work}
-              isInCollection={isSaved}
-              onToggleCollection={onToggleCollection}
-              onInspectEditions={onInspectEditions}
-            />
-          );
-        })}
-      </div>
+            return (
+              <BookCard
+                key={work.open_library_work_id || work.id || work.title}
+                work={work}
+                isInCollection={isSaved}
+                onToggleCollection={onToggleCollection}
+                onInspectEditions={onInspectEditions}
+              />
+            );
+          })}
+        </AnimatePresence>
+      </motion.div>
     </div>
   );
 };

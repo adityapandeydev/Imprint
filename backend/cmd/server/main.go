@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -60,6 +61,7 @@ func main() {
 		workRepo     domain.WorkRepository
 		editionRepo  domain.EditionRepository
 		wishlistRepo domain.WishlistRepository
+		searchRepo   domain.SearchCacheRepository
 	)
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -97,6 +99,7 @@ func main() {
 			workRepo = postgres.NewWorkRepo(db.Pool)
 			editionRepo = postgres.NewEditionRepo(db.Pool)
 			wishlistRepo = postgres.NewWishlistRepo(db.Pool)
+			searchRepo = postgres.NewSearchCacheRepo(db.Pool)
 		}
 	} else {
 		logger.Info("no live database URL configured in .env - running with in-memory persistence fallback")
@@ -111,6 +114,7 @@ func main() {
 		workRepo = &memWorkRepo{works: make(map[string]*domain.Work)}
 		editionRepo = &memEditionRepo{editions: make(map[string]*domain.Edition)}
 		wishlistRepo = &memWishlistRepo{items: make(map[string]*domain.WishlistItem)}
+		searchRepo = &memSearchCacheRepo{entries: make(map[string]*domain.SearchCacheEntry)}
 	}
 
 	// 4. External Book Provider Setup (Open Library + Google Books Hybrid MultiProvider)
@@ -126,7 +130,7 @@ func main() {
 	// 5. Application Services & Security Setup
 	jwtSvc := security.NewJWTService(os.Getenv("JWT_SECRET"), 7*24*time.Hour)
 	authSvc := app.NewAuthService(userRepo, jwtSvc)
-	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo)
+	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo, searchRepo)
 	wishlistSvc := app.NewWishlistService(wishlistRepo, catalogSvc, workRepo, editionRepo)
 
 	// 6. HTTP Handlers & Router
@@ -342,3 +346,61 @@ func (m *memUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, erro
 	m.users[u.ID] = u
 	return u, nil
 }
+
+type memSearchCacheRepo struct {
+	mu      sync.RWMutex
+	entries map[string]*domain.SearchCacheEntry
+}
+
+func (m *memSearchCacheRepo) GetCachedQuery(ctx context.Context, query string) (*domain.SearchCacheEntry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	trimmed := strings.ToLower(strings.TrimSpace(query))
+	if entry, ok := m.entries[trimmed]; ok && entry.ExpiresAt.After(time.Now()) {
+		entry.HitCount++
+		return entry, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *memSearchCacheRepo) SaveCachedQuery(ctx context.Context, entry *domain.SearchCacheEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	trimmed := strings.ToLower(strings.TrimSpace(entry.QueryText))
+	if trimmed == "" {
+		return nil
+	}
+	ttl := entry.ExpiresAt
+	if ttl.IsZero() || ttl.Before(time.Now()) {
+		ttl = time.Now().Add(7 * 24 * time.Hour)
+	}
+	entry.ExpiresAt = ttl
+	entry.UpdatedAt = time.Now()
+	m.entries[trimmed] = entry
+	return nil
+}
+
+func (m *memSearchCacheRepo) IncrementHitCount(ctx context.Context, query string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	trimmed := strings.ToLower(strings.TrimSpace(query))
+	if entry, ok := m.entries[trimmed]; ok {
+		entry.HitCount++
+	}
+	return nil
+}
+
+func (m *memSearchCacheRepo) PruneExpired(ctx context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var count int64
+	now := time.Now()
+	for k, v := range m.entries {
+		if v.ExpiresAt.Before(now) {
+			delete(m.entries, k)
+			count++
+		}
+	}
+	return count, nil
+}
+

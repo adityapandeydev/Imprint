@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -62,7 +62,57 @@ export const EditionModal: React.FC<EditionModalProps> = ({
     staleTime: 1000 * 60 * 10,
   });
 
-  const editions = data?.editions || [];
+  // Deduplicate and merge editions by ISBN/identifier to eliminate duplicate cards
+  const editions = useMemo(() => {
+    const raw = data?.editions || [];
+    if (raw.length <= 1) return raw;
+
+    const seen = new Map<string, number>();
+    const unique: Edition[] = [];
+
+    for (const ed of raw) {
+      const key =
+        ed.isbn13?.trim()
+          ? `isbn13:${ed.isbn13.trim()}`
+          : ed.isbn10?.trim()
+          ? `isbn10:${ed.isbn10.trim()}`
+          : ed.asin?.trim()
+          ? `asin:${ed.asin.trim()}`
+          : ed.open_library_edition_id?.trim()
+          ? `ol:${ed.open_library_edition_id.trim()}`
+          : ed.id
+          ? `id:${ed.id}`
+          : `title:${(ed.title || '').toLowerCase()}|${(ed.publisher || '').toLowerCase()}`;
+
+      if (seen.has(key)) {
+        const existingIdx = seen.get(key)!;
+        const existing = unique[existingIdx];
+        // Merge attributes to retain highest quality metadata
+        unique[existingIdx] = {
+          ...existing,
+          format:
+            existing.format === 'UNKNOWN' && ed.format && ed.format !== 'UNKNOWN'
+              ? ed.format
+              : existing.format,
+          page_count: existing.page_count ?? ed.page_count,
+          publisher: existing.publisher || ed.publisher,
+          publication_year: existing.publication_year ?? ed.publication_year,
+          publication_date: existing.publication_date || ed.publication_date,
+          cover_url: existing.cover_url || ed.cover_url,
+          language: existing.language || ed.language,
+          isbn10: existing.isbn10 || ed.isbn10,
+          isbn13: existing.isbn13 || ed.isbn13,
+          asin: existing.asin || ed.asin,
+        };
+      } else {
+        seen.set(key, unique.length);
+        unique.push({ ...ed });
+      }
+    }
+
+    return unique;
+  }, [data?.editions]);
+
   const fullWork = data?.work || work;
 
   const handleCopy = (text: string, label: string) => {

@@ -11,6 +11,15 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (err: any) => {
+            // Ignore client-initiated aborts from typing in debounced search
+            if (err?.code === 'ECONNRESET' || err?.message?.includes('socket hang up')) {
+              return;
+            }
+            console.error('[vite proxy error]', err?.message || err);
+          });
+        },
       },
       '/health': {
         target: 'http://localhost:8080',

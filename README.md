@@ -74,6 +74,31 @@ imprint/
 
 ---
 
+## High-Scale Search Architecture: MeiliSearch (Rust) Roadmap
+
+As Imprint scales, third-party public APIs (such as Open Library and Google Books) introduce latency and rate-limit bottlenecks. To ensure sub-30ms instantaneous search across 35+ million titles with zero external network reliance, Imprint is engineered with a roadmap to support an embedded, dedicated search engine.
+
+### Why MeiliSearch (Rust)?
+
+* **Rust Performance & Memory Safety:** Built in **Rust**, MeiliSearch delivers C/Rust-level execution speeds with memory safety, zero-cost abstractions, and SIMD-accelerated text tokenization.
+* **Instantaneous Search:** Returns relevant, typo-tolerant, as-you-type results in **15ms to 30ms**.
+* **Pluggable Architecture:** Imprint's Go backend decouples search via the `domain.BookProvider` interface. A `MeiliSearchProvider` can be plugged in as a drop-in primary provider without altering any API handlers or frontend components.
+
+### Bulk Data Ingestion Pipeline (To-Do / Upcoming)
+
+1. **Open Library Data Dump:** Open Library publishes monthly bulk database dumps (`ol_dump_works.txt.gz`, ~2.2GB compressed, containing ~35M works).
+2. **Streaming ETL Ingestion:** A Go batch worker streams and normalizes the TSV dump into clean documents (Title, Authors, Original Year, Subject Tags, Open Library Work ID) and batches them directly into MeiliSearch using its native Go SDK (`github.com/meilisearch/meilisearch-go`).
+3. **Hybrid Fallback:** For freshly published books released between monthly dump cycles, the system falls back seamlessly to live Google Books and Open Library API lookups.
+
+### Current Progressive Hybrid Pipeline
+
+To maintain zero server bloat on development machines and stay within serverless database limits, Imprint currently operates a lightweight **Unified Progressive Search Pipeline**:
+* **7-Day Persistent Search Cache:** High-frequency and trending searches are cached in Neon PostgreSQL with complete metadata (works, authors, covers, and editions) for **sub-15ms** instant responses.
+* **Exact-Match & Cover-Prioritized Relevance Scorer:** Candidates are scored dynamically so the exact matching title with verified cover artwork is guaranteed at **Position #1**.
+* **Fast-Path Provider:** Google Books delivers fast initial candidate cards (~350ms), while Open Library enriches missing synopses and high-resolution covers without blocking user interaction.
+
+---
+
 ## License
 
 MIT

@@ -5,33 +5,42 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 )
 
 // CatalogService orchestrates book discovery, metadata inspection, and lazy catalog persistence.
 type CatalogService struct {
-	provider    domain.BookProvider
-	workRepo    domain.WorkRepository
-	editionRepo domain.EditionRepository
-	searchCache sync.Map
+	provider        domain.BookProvider
+	workRepo        domain.WorkRepository
+	editionRepo     domain.EditionRepository
+	searchCacheRepo domain.SearchCacheRepository
+	searchCache     sync.Map
 }
 
-// NewCatalogService initializes a CatalogService.
+// NewCatalogService initializes a CatalogService with optional persistent search cache.
 func NewCatalogService(
 	provider domain.BookProvider,
 	workRepo domain.WorkRepository,
 	editionRepo domain.EditionRepository,
+	searchCacheRepo ...domain.SearchCacheRepository,
 ) *CatalogService {
+	var cacheRepo domain.SearchCacheRepository
+	if len(searchCacheRepo) > 0 {
+		cacheRepo = searchCacheRepo[0]
+	}
 	return &CatalogService{
-		provider:    provider,
-		workRepo:    workRepo,
-		editionRepo: editionRepo,
+		provider:        provider,
+		workRepo:        workRepo,
+		editionRepo:     editionRepo,
+		searchCacheRepo: cacheRepo,
 	}
 }
 
 // Search queries both local catalog and the external metadata provider,
-// returning normalized, deduplicated works with fast in-memory caching.
+// returning normalized, deduplicated works with fast in-memory caching
+// and persistent 7-day database search query caching.
 func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([]domain.Work, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
@@ -46,10 +55,22 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 		return cached.([]domain.Work), nil
 	}
 
-	// 1. Check local catalog first
+	// 1. Check persistent database cache (Neon PostgreSQL search_queries table)
+	if s.searchCacheRepo != nil {
+		if entry, err := s.searchCacheRepo.GetCachedQuery(ctx, trimmed); err == nil && entry != nil && len(entry.Results) > 0 {
+			res := entry.Results
+			if len(res) > limit {
+				res = res[:limit]
+			}
+			s.searchCache.Store(cacheKey, res)
+			return res, nil
+		}
+	}
+
+	// 2. Check local catalog first
 	localWorks, _ := s.workRepo.SearchLocalWorks(ctx, trimmed, limit)
 
-	// 2. Query external provider
+	// 3. Query external provider
 	providerWorks, err := s.provider.Search(ctx, domain.ProviderSearchParams{
 		Query: trimmed,
 		Limit: limit,
@@ -58,7 +79,7 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 		return nil, fmt.Errorf("searching book provider: %w", err)
 	}
 
-	// 3. Merge and deduplicate by OpenLibraryWorkID or Title
+	// 4. Merge and deduplicate by OpenLibraryWorkID or Title
 	seen := make(map[string]bool)
 	var combined []domain.Work
 
@@ -85,11 +106,34 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 		}
 	}
 
-	// Cache discovered works locally so later GetWork and AddToWishlist have immediate access
-	for i := range combined {
-		_ = s.workRepo.SaveWork(ctx, &combined[i])
-	}
+	// 5. Apply Exact-Match #1 dynamic ranker
+	combined = domain.RankWorks(combined, trimmed)
+
+	// In-memory instant cache for repeat queries
 	s.searchCache.Store(cacheKey, combined)
+
+	// 6. Asynchronously persist discovered works and query cache in background
+	// This ensures the HTTP search response is returned immediately to the reader in ~350ms
+	// without waiting on 60-80 remote database round-trips!
+	worksToSave := make([]domain.Work, len(combined))
+	copy(worksToSave, combined)
+
+	go func(works []domain.Work, q string) {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		for i := range works {
+			_ = s.workRepo.SaveWork(bgCtx, &works[i])
+		}
+
+		if s.searchCacheRepo != nil && len(works) > 0 {
+			_ = s.searchCacheRepo.SaveCachedQuery(bgCtx, &domain.SearchCacheEntry{
+				QueryText:   q,
+				Results:     works,
+				ResultCount: len(works),
+			})
+		}
+	}(worksToSave, trimmed)
 
 	return combined, nil
 }
@@ -144,6 +188,7 @@ func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.
 			providerEditions, _ = s.provider.GetEditionsForWork(ctx, work.Title, 20)
 		}
 		if len(providerEditions) > 0 {
+			providerEditions = domain.DeduplicateEditions(providerEditions)
 			for i := range providerEditions {
 				ed := &providerEditions[i]
 				ed.WorkID = work.ID
@@ -153,6 +198,9 @@ func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.
 			}
 		}
 	}
+
+	// 6. Ensure returned editions are clean, merged, and deduplicated
+	editions = domain.DeduplicateEditions(editions)
 
 	return work, editions, nil
 }

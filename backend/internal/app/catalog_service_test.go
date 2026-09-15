@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 )
@@ -90,7 +93,7 @@ func newMockEditionRepo() *mockEditionRepo {
 
 func (r *mockEditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) error {
 	if ed.ID == "" {
-		ed.ID = "generated-edition-uuid"
+		ed.ID = fmt.Sprintf("generated-edition-uuid-%d", len(r.editionsByID)+1)
 	}
 	r.editionsByID[ed.ID] = ed
 	r.byWorkID[ed.WorkID] = append(r.byWorkID[ed.WorkID], *ed)
@@ -216,5 +219,88 @@ func TestCatalogService_GetWork_WhenWorkAlreadyCachedWithoutEditions(t *testing.
 	localEditions, err := editionRepo.GetEditionsByWorkID(context.Background(), "local-work-uuid-123")
 	if err != nil || len(localEditions) != 2 {
 		t.Errorf("expected 2 editions saved in local editionRepo, got %d (err=%v)", len(localEditions), err)
+	}
+}
+
+type mockSearchCacheRepo struct {
+	entries   map[string]*domain.SearchCacheEntry
+	saveCalls int
+}
+
+func (m *mockSearchCacheRepo) GetCachedQuery(ctx context.Context, query string) (*domain.SearchCacheEntry, error) {
+	if entry, ok := m.entries[strings.ToLower(strings.TrimSpace(query))]; ok {
+		return entry, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockSearchCacheRepo) SaveCachedQuery(ctx context.Context, entry *domain.SearchCacheEntry) error {
+	m.saveCalls++
+	m.entries[strings.ToLower(strings.TrimSpace(entry.QueryText))] = entry
+	return nil
+}
+
+func (m *mockSearchCacheRepo) IncrementHitCount(ctx context.Context, query string) error {
+	return nil
+}
+
+func (m *mockSearchCacheRepo) PruneExpired(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func TestCatalogService_Search_WithSearchCacheRepo(t *testing.T) {
+	workRepo := newMockWorkRepo()
+	editionRepo := newMockEditionRepo()
+	cacheRepo := &mockSearchCacheRepo{
+		entries: map[string]*domain.SearchCacheEntry{
+			"dune": {
+				QueryText: "dune",
+				Results: []domain.Work{
+					{Title: "Dune", Authors: []domain.Author{{Name: "Frank Herbert"}}},
+				},
+				ResultCount: 1,
+			},
+		},
+	}
+
+	provider := &mockProvider{
+		searchWorks: []domain.Work{
+			{Title: "Should Not Be Called", Authors: []domain.Author{{Name: "Unknown"}}},
+		},
+	}
+
+	service := NewCatalogService(provider, workRepo, editionRepo, cacheRepo)
+
+	// 1. Search for cached query -> returns cached result immediately
+	results, err := service.Search(context.Background(), "Dune", 10)
+	if err != nil {
+		t.Fatalf("unexpected search error: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Dune" {
+		t.Fatalf("expected cached Dune, got %v", results)
+	}
+
+	// 2. Search for uncached query -> queries provider and saves to cache
+	provider.searchWorks = []domain.Work{
+		{Title: "Foundation and Empire", Authors: []domain.Author{{Name: "Isaac Asimov"}}},
+		{Title: "Foundation", Authors: []domain.Author{{Name: "Isaac Asimov"}}, CoverURL: "https://covers.openlibrary.org/b/id/123-M.jpg"},
+	}
+
+	results2, err := service.Search(context.Background(), "foundation", 10)
+	if err != nil {
+		t.Fatalf("unexpected search error: %v", err)
+	}
+	if len(results2) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results2))
+	}
+	// Verify exact match ranking put "Foundation" at Position 0
+	if results2[0].Title != "Foundation" {
+		t.Errorf("expected exact match 'Foundation' at rank 0, got '%s'", results2[0].Title)
+	}
+
+	// Give async save a moment to run
+	time.Sleep(50 * time.Millisecond)
+	if cacheRepo.saveCalls == 0 {
+		t.Errorf("expected SaveCachedQuery to be invoked for uncached query")
 	}
 }
