@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/adityapandeydev/imprint/backend/internal/app"
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
@@ -45,12 +47,31 @@ func (h *WishlistHandler) List(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, items)
 }
 
+// GetTags handles GET /api/v1/wishlist/tags
+func (h *WishlistHandler) GetTags(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "" {
+		Error(w, r, domain.ErrUnauthorized)
+		return
+	}
+
+	tags, err := h.wishlistService.GetUserTags(r.Context(), userID)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]any{"tags": tags})
+}
+
 // AddRequest defines the payload for adding an item to a wishlist.
 type AddRequest struct {
 	WorkID       string               `json:"work_id"`
 	EditionID    *string              `json:"edition_id,omitempty"`
 	Status       domain.ReadingStatus `json:"status,omitempty"`
 	Priority     int                  `json:"priority,omitempty"`
+	Rating       *int                 `json:"rating,omitempty"`
+	Tags         []string             `json:"tags,omitempty"`
 	Notes        string               `json:"notes,omitempty"`
 	Title        string               `json:"title,omitempty"`
 	Author       string               `json:"author,omitempty"`
@@ -74,6 +95,8 @@ func (h *WishlistHandler) Add(w http.ResponseWriter, r *http.Request) {
 		EditionID:    req.EditionID,
 		Status:       req.Status,
 		Priority:     req.Priority,
+		Rating:       req.Rating,
+		Tags:         req.Tags,
 		Notes:        req.Notes,
 		Title:        req.Title,
 		Author:       req.Author,
@@ -94,6 +117,7 @@ type UpdateRequest struct {
 	Status    *domain.ReadingStatus `json:"status,omitempty"`
 	Priority  *int                  `json:"priority,omitempty"`
 	Rating    *int                  `json:"rating,omitempty"`
+	Tags      *[]string             `json:"tags,omitempty"`
 	Notes     *string               `json:"notes,omitempty"`
 }
 
@@ -115,6 +139,7 @@ func (h *WishlistHandler) Update(w http.ResponseWriter, r *http.Request) {
 		Status:    req.Status,
 		Priority:  req.Priority,
 		Rating:    req.Rating,
+		Tags:      req.Tags,
 		Notes:     req.Notes,
 	})
 	if err != nil {
@@ -136,4 +161,67 @@ func (h *WishlistHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ImportGoodreads handles POST /api/v1/wishlist/import/goodreads (capped at 5MB)
+func (h *WishlistHandler) ImportGoodreads(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "" {
+		Error(w, r, domain.ErrUnauthorized)
+		return
+	}
+
+	// 5MB upload limit guardrail
+	const maxUploadSize = 5 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		http.Error(w, "Upload exceeds 5MB limit or is malformed", http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Missing 'file' form field in upload", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	summary, err := h.wishlistService.ImportGoodreadsCSV(r.Context(), userID, file)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, summary)
+}
+
+// Export handles GET /api/v1/wishlist/export?format=csv|json
+func (h *WishlistHandler) Export(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "" {
+		Error(w, r, domain.ErrUnauthorized)
+		return
+	}
+
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "csv"
+	}
+
+	data, contentType, err := h.wishlistService.ExportLibrary(r.Context(), userID, format)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	ext := "csv"
+	if format == "json" {
+		ext = "json"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"imprint_library.%s\"", ext))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

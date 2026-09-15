@@ -46,7 +46,7 @@ func newMockWorkRepo() *mockWorkRepo {
 
 func (r *mockWorkRepo) SaveWork(ctx context.Context, work *domain.Work) error {
 	if work.ID == "" {
-		work.ID = "generated-work-uuid"
+		work.ID = fmt.Sprintf("work-%d", len(r.worksByID)+1)
 	}
 	r.worksByID[work.ID] = work
 	if work.OpenLibraryWorkID != "" {

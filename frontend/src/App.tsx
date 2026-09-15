@@ -168,6 +168,7 @@ function ImprintApp() {
         edition_id: variables.edition?.id,
         status: 'WANT_TO_READ',
         priority: 3,
+        tags: [],
         work: variables.work,
         edition: variables.edition,
         created_at: new Date().toISOString(),
@@ -212,11 +213,12 @@ function ImprintApp() {
   const updateMutation = useMutation({
     mutationFn: (variables: {
       id: string;
-      edition_id?: string;
       status?: ReadingStatus;
       priority?: number;
       rating?: number;
       notes?: string;
+      edition_id?: string;
+      tags?: string[];
     }) => {
       return api.updateWishlistItem(variables.id, variables);
     },
@@ -239,6 +241,7 @@ function ImprintApp() {
             ...(variables.rating !== undefined ? { rating: variables.rating } : {}),
             ...(variables.notes !== undefined ? { notes: variables.notes } : {}),
             ...(variables.edition_id !== undefined ? { edition_id: variables.edition_id } : {}),
+            ...(variables.tags !== undefined ? { tags: variables.tags } : {}),
             updated_at: new Date().toISOString(),
           };
         })
@@ -474,7 +477,11 @@ function ImprintApp() {
                 onUpdatePriority={(id, priority) => updateMutation.mutate({ id, priority })}
                 onUpdateRating={(id, rating) => updateMutation.mutate({ id, rating })}
                 onUpdateNotes={(id, notes) => updateMutation.mutate({ id, notes })}
+                onUpdateTags={(id, tags) => updateMutation.mutate({ id, tags })}
                 onDelete={(id) => deleteMutation.mutate(id)}
+                onRefreshCollection={() =>
+                  queryClientInstance.invalidateQueries({ queryKey: ['wishlist', user?.id] })
+                }
                 onGoToDiscover={() => switchTab('discover')}
                 onInspectEditions={handleInspectWishlistEditions}
               />

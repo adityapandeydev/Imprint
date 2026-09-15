@@ -24,6 +24,7 @@ type WishlistRepository interface {
 	GetByID(ctx context.Context, id string) (*WishlistItem, error)
 	GetByUserAndWork(ctx context.Context, userID, workID string) (*WishlistItem, error)
 	ListByUser(ctx context.Context, userID string, status *ReadingStatus) ([]WishlistItem, error)
+	GetUserTags(ctx context.Context, userID string) ([]TagCount, error)
 	Update(ctx context.Context, item *WishlistItem) error
 	Delete(ctx context.Context, id, userID string) error
 }
@@ -35,4 +36,5 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	EnsureDefaultUser(ctx context.Context) (*User, error)
+	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 }

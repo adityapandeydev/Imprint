@@ -1,6 +1,9 @@
 package security
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -98,4 +101,21 @@ func (j *JWTService) ValidateToken(tokenStr string) (*UserClaims, error) {
 	}
 
 	return claims, nil
+}
+
+// GenerateSecureToken generates a cryptographically secure random 32-byte hex string and its SHA-256 hash.
+func GenerateSecureToken() (token string, hash string, error error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generating secure token: %w", err)
+	}
+	token = hex.EncodeToString(b)
+	hash = HashToken(token)
+	return token, hash, nil
+}
+
+// HashToken computes a SHA-256 hex string for constant-time lookups and safe storage.
+func HashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
 }

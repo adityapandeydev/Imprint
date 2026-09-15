@@ -43,10 +43,17 @@ type WishlistItem struct {
 	Priority   int           `json:"priority"` // 1 (lowest) to 5 (highest), default 3
 	Rating     *int          `json:"rating,omitempty"` // 1 to 5 stars
 	Notes      string        `json:"notes,omitempty"`
+	Tags       []string      `json:"tags"`
 	StartedAt  *time.Time    `json:"started_at,omitempty"`
 	FinishedAt *time.Time    `json:"finished_at,omitempty"`
 	CreatedAt  time.Time     `json:"created_at"`
 	UpdatedAt  time.Time     `json:"updated_at"`
+}
+
+// TagCount represents a tag and its frequency in the user's collection.
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
 }
 
 // Validate checks business rules for a wishlist item.

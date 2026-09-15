@@ -1,0 +1,15 @@
+package security
+
+import (
+	"crypto/rand"
+	"fmt"
+)
+
+// NewUUID generates a cryptographically random RFC 4122 v4 UUID string without external dependencies.
+func NewUUID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // Variant RFC 4122
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -22,17 +23,21 @@ func NewWishlistRepo(pool *pgxpool.Pool) *WishlistRepo {
 
 // Save creates or updates a wishlist item for a user and work.
 func (r *WishlistRepo) Save(ctx context.Context, item *domain.WishlistItem) error {
+	if item.Tags == nil {
+		item.Tags = []string{}
+	}
 	query := `
 		INSERT INTO wishlist_items (
-			user_id, work_id, edition_id, status, priority, rating, notes,
+			user_id, work_id, edition_id, status, priority, rating, notes, tags,
 			started_at, finished_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (user_id, work_id) DO UPDATE SET
 			edition_id = COALESCE(EXCLUDED.edition_id, wishlist_items.edition_id),
 			status = EXCLUDED.status,
 			priority = EXCLUDED.priority,
 			rating = COALESCE(EXCLUDED.rating, wishlist_items.rating),
 			notes = COALESCE(EXCLUDED.notes, wishlist_items.notes),
+			tags = CASE WHEN cardinality(EXCLUDED.tags) > 0 THEN EXCLUDED.tags ELSE wishlist_items.tags END,
 			started_at = COALESCE(EXCLUDED.started_at, wishlist_items.started_at),
 			finished_at = COALESCE(EXCLUDED.finished_at, wishlist_items.finished_at),
 			updated_at = NOW()
@@ -41,7 +46,7 @@ func (r *WishlistRepo) Save(ctx context.Context, item *domain.WishlistItem) erro
 	return r.pool.QueryRow(
 		ctx, query,
 		item.UserID, item.WorkID, item.EditionID, string(item.Status),
-		item.Priority, item.Rating, item.Notes, item.StartedAt, item.FinishedAt,
+		item.Priority, item.Rating, item.Notes, item.Tags, item.StartedAt, item.FinishedAt,
 	).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
 }
 
@@ -49,33 +54,41 @@ func (r *WishlistRepo) Save(ctx context.Context, item *domain.WishlistItem) erro
 func (r *WishlistRepo) GetByID(ctx context.Context, id string) (*domain.WishlistItem, error) {
 	query := `
 		SELECT wi.id, wi.user_id, wi.work_id, wi.edition_id, wi.status, wi.priority,
-		       wi.rating, COALESCE(wi.notes, ''), wi.started_at, wi.finished_at,
+		       wi.rating, COALESCE(wi.notes, ''), COALESCE(wi.tags, '{}'), wi.started_at, wi.finished_at,
 		       wi.created_at, wi.updated_at,
 		       w.title, w.cover_url, w.original_year,
-		       e.title, e.publisher, e.isbn13, e.format
+		       e.title, e.publisher, e.isbn13, e.format,
+		       COALESCE((
+		           SELECT string_agg(a.name, ', ' ORDER BY a.name)
+		           FROM work_authors wa
+		           JOIN authors a ON wa.author_id = a.id
+		           WHERE wa.work_id = w.id
+		       ), '') AS author_names
 		FROM wishlist_items wi
 		JOIN works w ON wi.work_id = w.id
 		LEFT JOIN editions e ON wi.edition_id = e.id
 		WHERE wi.id = $1;
 	`
 	var (
-		item          domain.WishlistItem
-		status        string
-		workTitle     string
-		workCover     string
-		workYear      *int
-		edTitle       *string
-		edPublisher   *string
-		edISBN13      *string
-		edFormat      *string
+		item        domain.WishlistItem
+		status      string
+		workTitle   string
+		workCover   string
+		workYear    *int
+		edTitle     *string
+		edPublisher *string
+		edISBN13    *string
+		edFormat    *string
+		authorNames string
 	)
 
 	err := r.pool.QueryRow(ctx, query, id).Scan(
 		&item.ID, &item.UserID, &item.WorkID, &item.EditionID, &status, &item.Priority,
-		&item.Rating, &item.Notes, &item.StartedAt, &item.FinishedAt,
+		&item.Rating, &item.Notes, &item.Tags, &item.StartedAt, &item.FinishedAt,
 		&item.CreatedAt, &item.UpdatedAt,
 		&workTitle, &workCover, &workYear,
 		&edTitle, &edPublisher, &edISBN13, &edFormat,
+		&authorNames,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrWishlistItemNotFound
@@ -84,12 +97,24 @@ func (r *WishlistRepo) GetByID(ctx context.Context, id string) (*domain.Wishlist
 		return nil, fmt.Errorf("querying wishlist item: %w", err)
 	}
 
+	if item.Tags == nil {
+		item.Tags = []string{}
+	}
 	item.Status = domain.ReadingStatus(status)
 	item.Work = &domain.Work{
 		ID:           item.WorkID,
 		Title:        workTitle,
 		CoverURL:     workCover,
 		OriginalYear: workYear,
+		Authors:      []domain.Author{},
+	}
+
+	if authorNames != "" {
+		for _, name := range strings.Split(authorNames, ", ") {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				item.Work.Authors = append(item.Work.Authors, domain.Author{Name: trimmed})
+			}
+		}
 	}
 
 	if item.EditionID != nil && edTitle != nil {
@@ -114,7 +139,7 @@ func (r *WishlistRepo) GetByID(ctx context.Context, id string) (*domain.Wishlist
 func (r *WishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID string) (*domain.WishlistItem, error) {
 	query := `
 		SELECT id, user_id, work_id, edition_id, status, priority,
-		       rating, COALESCE(notes, ''), started_at, finished_at,
+		       rating, COALESCE(notes, ''), COALESCE(tags, '{}'), started_at, finished_at,
 		       created_at, updated_at
 		FROM wishlist_items
 		WHERE user_id = $1 AND work_id = $2;
@@ -125,7 +150,7 @@ func (r *WishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID stri
 	)
 	err := r.pool.QueryRow(ctx, query, userID, workID).Scan(
 		&item.ID, &item.UserID, &item.WorkID, &item.EditionID, &status, &item.Priority,
-		&item.Rating, &item.Notes, &item.StartedAt, &item.FinishedAt,
+		&item.Rating, &item.Notes, &item.Tags, &item.StartedAt, &item.FinishedAt,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -135,6 +160,9 @@ func (r *WishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID stri
 		return nil, fmt.Errorf("querying wishlist item by user and work: %w", err)
 	}
 
+	if item.Tags == nil {
+		item.Tags = []string{}
+	}
 	item.Status = domain.ReadingStatus(status)
 	return &item, nil
 }
@@ -143,10 +171,16 @@ func (r *WishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID stri
 func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilter *domain.ReadingStatus) ([]domain.WishlistItem, error) {
 	query := `
 		SELECT wi.id, wi.user_id, wi.work_id, wi.edition_id, wi.status, wi.priority,
-		       wi.rating, COALESCE(wi.notes, ''), wi.started_at, wi.finished_at,
+		       wi.rating, COALESCE(wi.notes, ''), COALESCE(wi.tags, '{}'), wi.started_at, wi.finished_at,
 		       wi.created_at, wi.updated_at,
 		       w.title, w.cover_url, w.original_year,
-		       e.title, e.publisher, e.isbn13, e.format
+		       e.title, e.publisher, e.isbn13, e.format,
+		       COALESCE((
+		           SELECT string_agg(a.name, ', ' ORDER BY a.name)
+		           FROM work_authors wa
+		           JOIN authors a ON wa.author_id = a.id
+		           WHERE wa.work_id = w.id
+		       ), '') AS author_names
 		FROM wishlist_items wi
 		JOIN works w ON wi.work_id = w.id
 		LEFT JOIN editions e ON wi.edition_id = e.id
@@ -178,24 +212,38 @@ func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilt
 			edPublisher *string
 			edISBN13    *string
 			edFormat    *string
+			authorNames string
 		)
 
 		if err := rows.Scan(
 			&item.ID, &item.UserID, &item.WorkID, &item.EditionID, &status, &item.Priority,
-			&item.Rating, &item.Notes, &item.StartedAt, &item.FinishedAt,
+			&item.Rating, &item.Notes, &item.Tags, &item.StartedAt, &item.FinishedAt,
 			&item.CreatedAt, &item.UpdatedAt,
 			&workTitle, &workCover, &workYear,
 			&edTitle, &edPublisher, &edISBN13, &edFormat,
+			&authorNames,
 		); err != nil {
 			return nil, fmt.Errorf("scanning wishlist item row: %w", err)
 		}
 
+		if item.Tags == nil {
+			item.Tags = []string{}
+		}
 		item.Status = domain.ReadingStatus(status)
 		item.Work = &domain.Work{
 			ID:           item.WorkID,
 			Title:        workTitle,
 			CoverURL:     workCover,
 			OriginalYear: workYear,
+			Authors:      []domain.Author{},
+		}
+
+		if authorNames != "" {
+			for _, name := range strings.Split(authorNames, ", ") {
+				if trimmed := strings.TrimSpace(name); trimmed != "" {
+					item.Work.Authors = append(item.Work.Authors, domain.Author{Name: trimmed})
+				}
+			}
 		}
 
 		if item.EditionID != nil && edTitle != nil {
@@ -219,8 +267,40 @@ func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilt
 	return items, nil
 }
 
-// Update modifies status, priority, rating, notes, and dates for an existing item.
+// GetUserTags aggregates all unique custom tags and their frequency in the user's collection.
+func (r *WishlistRepo) GetUserTags(ctx context.Context, userID string) ([]domain.TagCount, error) {
+	query := `
+		SELECT unnest(tags) AS tag, COUNT(*) AS count
+		FROM wishlist_items
+		WHERE user_id = $1 AND cardinality(tags) > 0
+		GROUP BY tag
+		ORDER BY count DESC, tag ASC;
+	`
+	rows, err := r.pool.Query(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("querying user tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []domain.TagCount
+	for rows.Next() {
+		var tc domain.TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, fmt.Errorf("scanning tag count: %w", err)
+		}
+		tags = append(tags, tc)
+	}
+	if tags == nil {
+		tags = []domain.TagCount{}
+	}
+	return tags, nil
+}
+
+// Update modifies status, priority, rating, notes, tags, and dates for an existing item.
 func (r *WishlistRepo) Update(ctx context.Context, item *domain.WishlistItem) error {
+	if item.Tags == nil {
+		item.Tags = []string{}
+	}
 	query := `
 		UPDATE wishlist_items
 		SET edition_id = $1,
@@ -228,16 +308,17 @@ func (r *WishlistRepo) Update(ctx context.Context, item *domain.WishlistItem) er
 		    priority = $3,
 		    rating = $4,
 		    notes = $5,
-		    started_at = $6,
-		    finished_at = $7,
+		    tags = $6,
+		    started_at = $7,
+		    finished_at = $8,
 		    updated_at = NOW()
-		WHERE id = $8 AND user_id = $9
+		WHERE id = $9 AND user_id = $10
 		RETURNING updated_at;
 	`
 	err := r.pool.QueryRow(
 		ctx, query,
 		item.EditionID, string(item.Status), item.Priority, item.Rating,
-		item.Notes, item.StartedAt, item.FinishedAt, item.ID, item.UserID,
+		item.Notes, item.Tags, item.StartedAt, item.FinishedAt, item.ID, item.UserID,
 	).Scan(&item.UpdatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {

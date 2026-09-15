@@ -18,6 +18,7 @@ interface WishlistCardProps {
   onUpdatePriority: (id: string, priority: number) => void;
   onUpdateRating: (id: string, rating: number) => void;
   onUpdateNotes: (id: string, notes: string) => void;
+  onUpdateTags?: (id: string, tags: string[]) => void;
   onDelete: (id: string) => void;
   onInspectEditions?: (item: WishlistItem) => void;
 }
@@ -35,6 +36,7 @@ export const WishlistCard: React.FC<WishlistCardProps> = ({
   onUpdatePriority,
   onUpdateRating,
   onUpdateNotes,
+  onUpdateTags,
   onDelete,
   onInspectEditions,
 }) => {
@@ -42,6 +44,20 @@ export const WishlistCard: React.FC<WishlistCardProps> = ({
   const [noteText, setNoteText] = useState(item.notes || '');
   const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isTagInputOpen, setIsTagInputOpen] = useState(false);
+  const [newTagText, setNewTagText] = useState('');
+
+  const handleAddTag = () => {
+    const clean = newTagText.trim();
+    if (clean && onUpdateTags) {
+      const existing = item.tags || [];
+      if (!existing.some((t) => t.toLowerCase() === clean.toLowerCase())) {
+        onUpdateTags(item.id, [...existing, clean]);
+      }
+      setNewTagText('');
+      setIsTagInputOpen(false);
+    }
+  };
 
   const work = item.work;
   const edition = item.edition;
@@ -229,6 +245,68 @@ export const WishlistCard: React.FC<WishlistCardProps> = ({
                   ))}
                 </div>
               </div>
+            )}
+          </div>
+
+          {/* Custom Shelf Tags */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1.5">
+            {(item.tags || []).map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex items-center gap-1 text-[10px] font-medium bg-surface-hover text-text-muted px-2 py-0.5 rounded-full border border-border-subtle group"
+              >
+                #{tag}
+                {onUpdateTags && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUpdateTags(item.id, (item.tags || []).filter((t) => t !== tag));
+                    }}
+                    className="hover:text-rose-400 cursor-pointer ml-0.5 transition-colors"
+                    title={`Remove tag ${tag}`}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+
+            {onUpdateTags && (
+              isTagInputOpen ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={newTagText}
+                    onChange={(e) => setNewTagText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddTag();
+                      if (e.key === 'Escape') setIsTagInputOpen(false);
+                    }}
+                    placeholder="Shelf name..."
+                    className="px-2 py-0.5 bg-canvas text-text-main rounded-md border border-border-subtle text-[10px] outline-none w-24"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleAddTag}
+                    className="text-[10px] font-bold text-accent hover:underline cursor-pointer"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => setIsTagInputOpen(false)}
+                    className="text-[10px] text-text-muted hover:text-text-main cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsTagInputOpen(true)}
+                  className="text-[10px] text-accent/80 hover:text-accent font-semibold px-2 py-0.5 rounded-full bg-accent-soft/30 hover:bg-accent-soft/60 border border-accent/20 cursor-pointer transition-colors"
+                >
+                  + Shelf Tag
+                </button>
+              )
             )}
           </div>
         </div>

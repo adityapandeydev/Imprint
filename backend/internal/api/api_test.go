@@ -135,6 +135,21 @@ func (r *testWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain
 	}
 	return res, nil
 }
+func (r *testWishlistRepo) GetUserTags(ctx context.Context, uID string) ([]domain.TagCount, error) {
+	tagMap := make(map[string]int)
+	for _, it := range r.items {
+		if it.UserID == uID {
+			for _, t := range it.Tags {
+				tagMap[t]++
+			}
+		}
+	}
+	var res []domain.TagCount
+	for t, c := range tagMap {
+		res = append(res, domain.TagCount{Tag: t, Count: c})
+	}
+	return res, nil
+}
 func (r *testWishlistRepo) Update(ctx context.Context, item *domain.WishlistItem) error {
 	r.items[item.ID] = item
 	return nil
@@ -194,6 +209,89 @@ func (r *testUserRepo) GetByUsername(ctx context.Context, username string) (*dom
 func (r *testUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, error) {
 	return &domain.User{ID: "00000000-0000-0000-0000-000000000001", Email: "reader@imprint.app", Username: "reader"}, nil
 }
+func (r *testUserRepo) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	if u, ok := r.users[userID]; ok {
+		u.PasswordHash = passwordHash
+		return nil
+	}
+	return domain.ErrUserNotFound
+}
+
+type testTokenRepo struct {
+	refreshTokens map[string]*domain.RefreshToken
+	resetTokens   map[string]*domain.PasswordResetToken
+}
+
+func (r *testTokenRepo) SaveRefreshToken(ctx context.Context, t *domain.RefreshToken) error {
+	r.refreshTokens[t.TokenHash] = t
+	return nil
+}
+func (r *testTokenRepo) GetRefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
+	if t, ok := r.refreshTokens[hash]; ok {
+		return t, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (r *testTokenRepo) RevokeRefreshToken(ctx context.Context, id string) error {
+	for _, t := range r.refreshTokens {
+		if t.ID == id {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+func (r *testTokenRepo) RevokeTokenFamily(ctx context.Context, familyID string) error {
+	for _, t := range r.refreshTokens {
+		if t.FamilyID == familyID {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+func (r *testTokenRepo) RevokeUserTokens(ctx context.Context, userID string) error {
+	for _, t := range r.refreshTokens {
+		if t.UserID == userID {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+func (r *testTokenRepo) SavePasswordResetToken(ctx context.Context, t *domain.PasswordResetToken) error {
+	r.resetTokens[t.TokenHash] = t
+	return nil
+}
+func (r *testTokenRepo) GetValidPasswordResetToken(ctx context.Context, hash string) (*domain.PasswordResetToken, error) {
+	if t, ok := r.resetTokens[hash]; ok && !t.IsExpired() {
+		return t, nil
+	}
+	return nil, domain.ErrResetTokenExpired
+}
+func (r *testTokenRepo) MarkPasswordResetUsed(ctx context.Context, id string) error {
+	for _, t := range r.resetTokens {
+		if t.ID == id {
+			now := time.Now()
+			t.UsedAt = &now
+		}
+	}
+	return nil
+}
+
+type testAnalyticsRepo struct{}
+
+func (r *testAnalyticsRepo) GetReadingStats(ctx context.Context, userID string, year int) (*domain.ReadingStats, error) {
+	return &domain.ReadingStats{
+		CurrentYear:        year,
+		TotalBooks:         5,
+		BooksFinishedYear:  3,
+		TotalPagesRead:     960,
+		CurrentlyReading:   1,
+		WantToRead:         1,
+		AverageRating:      4.5,
+		TopGenres:          []domain.GenreCount{{Genre: "Fantasy", Count: 3}},
+		TopAuthors:         []domain.AuthorCount{{Author: "J.R.R. Tolkien", Count: 3}},
+		FormatDistribution: map[string]int{"Hardcover": 3, "Paperback": 2},
+	}, nil
+}
 
 func setupTestRouter() (http.Handler, *security.JWTService) {
 	workRepo := &testWorkRepo{works: map[string]*domain.Work{
@@ -202,22 +300,32 @@ func setupTestRouter() (http.Handler, *security.JWTService) {
 	editionRepo := &testEditionRepo{}
 	wishlistRepo := &testWishlistRepo{items: make(map[string]*domain.WishlistItem)}
 	userRepo := &testUserRepo{users: make(map[string]*domain.User)}
+	tokenRepo := &testTokenRepo{
+		refreshTokens: make(map[string]*domain.RefreshToken),
+		resetTokens:   make(map[string]*domain.PasswordResetToken),
+	}
+	analyticsRepo := &testAnalyticsRepo{}
 	provider := &testProvider{}
 
 	jwtSvc := security.NewJWTService("test-secret-12345", 2*time.Hour)
-	authSvc := app.NewAuthService(userRepo, jwtSvc)
+	authSvc := app.NewAuthService(userRepo, tokenRepo, jwtSvc)
 	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo)
 	wishlistSvc := app.NewWishlistService(wishlistRepo, catalogSvc, workRepo, editionRepo)
+	analyticsSvc := app.NewAnalyticsService(analyticsRepo)
+	rateLimiter := security.NewRateLimiter(5 * time.Minute)
 
 	authHandler := NewAuthHandler(authSvc)
 	catalogHandler := NewCatalogHandler(catalogSvc)
 	wishlistHandler := NewWishlistHandler(wishlistSvc)
+	analyticsHandler := NewAnalyticsHandler(analyticsSvc)
 
 	router := NewRouter(RouterConfig{
-		CatalogHandler:  catalogHandler,
-		WishlistHandler: wishlistHandler,
-		AuthHandler:     authHandler,
-		JWTService:      jwtSvc,
+		CatalogHandler:   catalogHandler,
+		WishlistHandler:  wishlistHandler,
+		AuthHandler:      authHandler,
+		AnalyticsHandler: analyticsHandler,
+		JWTService:       jwtSvc,
+		RateLimiter:      rateLimiter,
 	})
 
 	return router, jwtSvc

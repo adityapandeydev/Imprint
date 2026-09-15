@@ -124,3 +124,17 @@ func (r *UserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, error) 
 	}
 	return &user, nil
 }
+
+// UpdatePassword updates the password hash for a user.
+func (r *UserRepo) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	query := `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2;`
+	res, err := r.pool.Exec(ctx, query, passwordHash, userID)
+	if err != nil {
+		return fmt.Errorf("updating user password: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
+}
+

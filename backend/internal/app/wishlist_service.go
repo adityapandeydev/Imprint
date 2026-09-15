@@ -1,8 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +21,8 @@ type AddToWishlistRequest struct {
 	EditionID    *string              `json:"edition_id,omitempty"`
 	Status       domain.ReadingStatus `json:"status"`
 	Priority     int                  `json:"priority"`
+	Rating       *int                 `json:"rating,omitempty"`
+	Tags         []string             `json:"tags,omitempty"`
 	Notes        string               `json:"notes,omitempty"`
 	Title        string               `json:"title,omitempty"`
 	Author       string               `json:"author,omitempty"`
@@ -31,7 +38,16 @@ type UpdateWishlistRequest struct {
 	Status    *domain.ReadingStatus `json:"status,omitempty"`
 	Priority  *int                  `json:"priority,omitempty"`
 	Rating    *int                  `json:"rating,omitempty"`
+	Tags      *[]string             `json:"tags,omitempty"`
 	Notes     *string               `json:"notes,omitempty"`
+}
+
+// GoodreadsImportSummary aggregates results of a batch CSV import.
+type GoodreadsImportSummary struct {
+	TotalRows     int `json:"total_rows"`
+	ImportedCount int `json:"imported_count"`
+	SkippedCount  int `json:"skipped_count"`
+	FailedCount   int `json:"failed_count"`
 }
 
 // WishlistService orchestrates personal collection management and reading lifecycle tracking.
@@ -76,6 +92,10 @@ func (s *WishlistService) ListUserWishlist(
 			if w, err := s.workRepo.GetWorkByID(ctx, items[i].WorkID); err == nil {
 				items[i].Work = w
 			}
+		} else if items[i].Work != nil && len(items[i].Work.Authors) == 0 && items[i].WorkID != "" {
+			if w, err := s.workRepo.GetWorkByID(ctx, items[i].WorkID); err == nil && len(w.Authors) > 0 {
+				items[i].Work.Authors = w.Authors
+			}
 		}
 		if items[i].Edition == nil && items[i].EditionID != nil && *items[i].EditionID != "" {
 			if ed, err := s.editionRepo.GetEditionByID(ctx, *items[i].EditionID); err == nil {
@@ -87,8 +107,15 @@ func (s *WishlistService) ListUserWishlist(
 	return items, nil
 }
 
+// GetUserTags returns all custom tags created by the reader with book counts.
+func (s *WishlistService) GetUserTags(ctx context.Context, userID string) ([]domain.TagCount, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrUserNotFound
+	}
+	return s.wishlistRepo.GetUserTags(ctx, userID)
+}
+
 // AddToWishlist adds a book to a user's collection.
-// If the work is not yet stored locally, it ensures the work is lazily persisted first.
 func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRequest) (*domain.WishlistItem, error) {
 	if strings.TrimSpace(req.UserID) == "" {
 		return nil, domain.ErrUserNotFound
@@ -132,6 +159,11 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 		}
 	}
 
+	if work != nil && len(work.Authors) == 0 && req.Author != "" {
+		work.Authors = []domain.Author{{Name: req.Author}}
+		_ = s.workRepo.SaveWork(ctx, work)
+	}
+
 	// 2. Check if already in user's collection
 	existing, _ := s.wishlistRepo.GetByUserAndWork(ctx, req.UserID, work.ID)
 	if existing != nil {
@@ -161,6 +193,11 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 		priority = 3
 	}
 
+	tags := req.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
 	item := domain.WishlistItem{
 		UserID:    req.UserID,
 		WorkID:    work.ID,
@@ -169,6 +206,8 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 		Edition:   preferredEdition,
 		Status:    status,
 		Priority:  priority,
+		Rating:    req.Rating,
+		Tags:      tags,
 		Notes:     strings.TrimSpace(req.Notes),
 	}
 
@@ -202,7 +241,7 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 	return &item, nil
 }
 
-// UpdateWishlistItem updates status, priority, rating, or notes for a wishlist entry.
+// UpdateWishlistItem updates status, priority, rating, notes, or tags for a wishlist entry.
 func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWishlistRequest) (*domain.WishlistItem, error) {
 	item, err := s.wishlistRepo.GetByID(ctx, req.ID)
 	if err != nil {
@@ -260,6 +299,19 @@ func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWish
 		item.Notes = strings.TrimSpace(*req.Notes)
 	}
 
+	if req.Tags != nil {
+		cleanedTags := make([]string, 0, len(*req.Tags))
+		seen := make(map[string]bool)
+		for _, t := range *req.Tags {
+			clean := strings.TrimSpace(t)
+			if clean != "" && !seen[strings.ToLower(clean)] {
+				seen[strings.ToLower(clean)] = true
+				cleanedTags = append(cleanedTags, clean)
+			}
+		}
+		item.Tags = cleanedTags
+	}
+
 	if err := item.Validate(); err != nil {
 		return nil, err
 	}
@@ -274,4 +326,290 @@ func (s *WishlistService) UpdateWishlistItem(ctx context.Context, req UpdateWish
 // RemoveFromWishlist removes an item from a user's collection.
 func (s *WishlistService) RemoveFromWishlist(ctx context.Context, itemID, userID string) error {
 	return s.wishlistRepo.Delete(ctx, itemID, userID)
+}
+
+// cleanGoodreadsField strips spreadsheet formula wrappers like ="0385537859"
+func cleanGoodreadsField(val string) string {
+	s := strings.TrimSpace(val)
+	s = strings.TrimPrefix(s, "=")
+	s = strings.Trim(s, "\"")
+	return strings.TrimSpace(s)
+}
+
+// parseDate attempts multiple date formats common in Goodreads CSV exports.
+func parseDate(val string) *time.Time {
+	clean := cleanGoodreadsField(val)
+	if clean == "" {
+		return nil
+	}
+	formats := []string{
+		"2006/01/02",
+		"2006-01-02",
+		"01/02/2006",
+		"1/2/2006",
+		"02/01/2006",
+		"2006/01",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, clean); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
+// ImportGoodreadsCSV parses an uploaded Goodreads library export CSV,
+// normalizes ISBNs, maps exclusive shelves to ReadingStatus, creates custom tags, and saves books.
+func (s *WishlistService) ImportGoodreadsCSV(ctx context.Context, userID string, r io.Reader) (*GoodreadsImportSummary, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrUserNotFound
+	}
+
+	reader := csv.NewReader(r)
+	reader.LazyQuotes = true
+	reader.FieldsPerRecord = -1 // Allow variable field count gracefully
+
+	headerRow, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("reading CSV header: %w", err)
+	}
+
+	colMap := make(map[string]int)
+	for i, h := range headerRow {
+		colMap[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+
+	getCol := func(row []string, name string) string {
+		idx, ok := colMap[name]
+		if !ok || idx >= len(row) {
+			return ""
+		}
+		return row[idx]
+	}
+
+	summary := &GoodreadsImportSummary{}
+
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			summary.FailedCount++
+			continue
+		}
+
+		summary.TotalRows++
+
+		title := cleanGoodreadsField(getCol(row, "title"))
+		if title == "" {
+			summary.SkippedCount++
+			continue
+		}
+
+		author := cleanGoodreadsField(getCol(row, "author"))
+		rawISBN13 := cleanGoodreadsField(getCol(row, "isbn13"))
+		rawISBN := cleanGoodreadsField(getCol(row, "isbn"))
+		exclusiveShelf := strings.ToLower(cleanGoodreadsField(getCol(row, "exclusive shelf")))
+		bookshelves := cleanGoodreadsField(getCol(row, "bookshelves"))
+		rawRating := cleanGoodreadsField(getCol(row, "my rating"))
+		dateRead := parseDate(getCol(row, "date read"))
+		dateAdded := parseDate(getCol(row, "date added"))
+		notes := cleanGoodreadsField(getCol(row, "my review"))
+		if notes == "" {
+			notes = cleanGoodreadsField(getCol(row, "private notes"))
+		}
+
+		// 1. Determine Reading Status
+		status := domain.StatusWantToRead
+		if strings.Contains(exclusiveShelf, "read") && !strings.Contains(exclusiveShelf, "to-read") {
+			status = domain.StatusFinished
+		} else if strings.Contains(exclusiveShelf, "currently") {
+			status = domain.StatusCurrentlyReading
+		} else if strings.Contains(exclusiveShelf, "abandon") || strings.Contains(exclusiveShelf, "did-not-finish") {
+			status = domain.StatusAbandoned
+		}
+
+		// 2. Normalize ISBN
+		var isbn13 string
+		if rawISBN13 != "" {
+			if norm13, _, err := domain.NormalizeISBN(rawISBN13); err == nil {
+				isbn13 = norm13
+			}
+		}
+		if isbn13 == "" && rawISBN != "" {
+			if norm13, _, err := domain.NormalizeISBN(rawISBN); err == nil {
+				isbn13 = norm13
+			}
+		}
+
+		// 3. Extract Tags
+		tags := make([]string, 0)
+		seenTags := make(map[string]bool)
+		if bookshelves != "" {
+			for _, part := range strings.Split(bookshelves, ",") {
+				t := strings.TrimSpace(part)
+				if t != "" && t != "to-read" && t != "currently-reading" && t != "read" {
+					lower := strings.ToLower(t)
+					if !seenTags[lower] {
+						seenTags[lower] = true
+						tags = append(tags, t)
+					}
+				}
+			}
+		}
+
+		// 4. Rating
+		var rating *int
+		if rVal, err := strconv.Atoi(rawRating); err == nil && rVal >= 1 && rVal <= 5 {
+			rating = &rVal
+		}
+
+		// 5. Work creation or lookup
+		var work *domain.Work
+		if isbn13 != "" {
+			if ed, err := s.editionRepo.GetEditionByISBN(ctx, isbn13); err == nil && ed != nil {
+				work, _ = s.workRepo.GetWorkByID(ctx, ed.WorkID)
+			}
+		}
+
+		if work == nil {
+			// Save new work entry
+			newWork := &domain.Work{
+				Title: title,
+			}
+			if author != "" {
+				newWork.Authors = []domain.Author{{Name: author}}
+			}
+			if err := s.workRepo.SaveWork(ctx, newWork); err == nil {
+				work = newWork
+			} else {
+				summary.FailedCount++
+				continue
+			}
+		}
+
+		// 6. Check duplicates
+		existing, _ := s.wishlistRepo.GetByUserAndWork(ctx, userID, work.ID)
+		if existing != nil {
+			summary.SkippedCount++
+			continue
+		}
+
+		// 7. Save WishlistItem
+		item := &domain.WishlistItem{
+			UserID:     userID,
+			WorkID:     work.ID,
+			Status:     status,
+			Priority:   3,
+			Rating:     rating,
+			Tags:       tags,
+			Notes:      notes,
+			FinishedAt: dateRead,
+			StartedAt:  dateAdded,
+		}
+
+		if err := s.wishlistRepo.Save(ctx, item); err != nil {
+			summary.FailedCount++
+		} else {
+			summary.ImportedCount++
+		}
+	}
+
+	return summary, nil
+}
+
+// ExportLibrary exports the user's complete collection in CSV or JSON format.
+func (s *WishlistService) ExportLibrary(ctx context.Context, userID string, format string) ([]byte, string, error) {
+	items, err := s.ListUserWishlist(ctx, userID, nil)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if strings.ToLower(format) == "json" {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return nil, "", fmt.Errorf("encoding JSON export: %w", err)
+		}
+		return data, "application/json", nil
+	}
+
+	// Default CSV format
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+
+	// Write CSV Header
+	_ = writer.Write([]string{
+		"Title",
+		"Author",
+		"Original Year",
+		"Reading Status",
+		"Priority",
+		"Rating",
+		"Custom Tags",
+		"ISBN13",
+		"Format",
+		"Started At",
+		"Finished At",
+		"Notes",
+	})
+
+	for _, item := range items {
+		title := ""
+		author := ""
+		yearStr := ""
+		if item.Work != nil {
+			title = item.Work.Title
+			if len(item.Work.Authors) > 0 {
+				author = item.Work.Authors[0].Name
+			}
+			if item.Work.OriginalYear != nil {
+				yearStr = strconv.Itoa(*item.Work.OriginalYear)
+			}
+		}
+
+		isbn := ""
+		fmtStr := ""
+		if item.Edition != nil {
+			if item.Edition.ISBN13 != nil {
+				isbn = *item.Edition.ISBN13
+			}
+			fmtStr = string(item.Edition.Format)
+		}
+
+		ratingStr := ""
+		if item.Rating != nil {
+			ratingStr = strconv.Itoa(*item.Rating)
+		}
+
+		startedStr := ""
+		if item.StartedAt != nil {
+			startedStr = item.StartedAt.Format("2006-01-02")
+		}
+
+		finishedStr := ""
+		if item.FinishedAt != nil {
+			finishedStr = item.FinishedAt.Format("2006-01-02")
+		}
+
+		tagsStr := strings.Join(item.Tags, ", ")
+
+		_ = writer.Write([]string{
+			title,
+			author,
+			yearStr,
+			string(item.Status),
+			strconv.Itoa(item.Priority),
+			ratingStr,
+			tagsStr,
+			isbn,
+			fmtStr,
+			startedStr,
+			finishedStr,
+			item.Notes,
+		})
+	}
+
+	writer.Flush()
+	return buf.Bytes(), "text/csv; charset=utf-8", nil
 }

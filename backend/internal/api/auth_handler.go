@@ -118,3 +118,75 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 	JSON(w, http.StatusOK, user)
 }
+
+// Refresh handles POST /api/v1/auth/refresh
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	tokenStr := req.RefreshToken
+	if tokenStr == "" {
+		if cookie, err := r.Cookie("imprint_refresh_token"); err == nil {
+			tokenStr = cookie.Value
+		}
+	}
+
+	if tokenStr == "" {
+		Error(w, r, domain.ErrInvalidToken)
+		return
+	}
+
+	tokens, err := h.authSvc.RefreshToken(r.Context(), tokenStr)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	setAuthCookie(w, r, tokens.AccessToken, tokens.ExpiresAt)
+	JSON(w, http.StatusOK, tokens)
+}
+
+// ForgotPassword handles POST /api/v1/auth/forgot-password
+func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req app.PasswordResetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Error(w, r, domain.ErrNotFound)
+		return
+	}
+
+	rawToken, err := h.authSvc.RequestPasswordReset(r.Context(), req.Email)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	res := map[string]string{
+		"message": "If that email is registered, recovery instructions have been prepared.",
+	}
+	if rawToken != "" {
+		res["reset_token"] = rawToken
+	}
+
+	JSON(w, http.StatusOK, res)
+}
+
+// ResetPassword handles POST /api/v1/auth/reset-password
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req app.ResetPasswordSubmission
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Error(w, r, domain.ErrInvalidToken)
+		return
+	}
+
+	if err := h.authSvc.ResetPassword(r.Context(), req.Token, req.NewPassword); err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]string{
+		"message": "Password successfully updated. Please log in with your new password.",
+	})
+}
+

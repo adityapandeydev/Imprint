@@ -59,7 +59,10 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 
 	case errors.Is(err, domain.ErrUnauthorized),
 		errors.Is(err, domain.ErrInvalidToken),
-		errors.Is(err, domain.ErrInvalidCredentials):
+		errors.Is(err, domain.ErrInvalidCredentials),
+		errors.Is(err, domain.ErrTokenRevoked),
+		errors.Is(err, domain.ErrTokenReused),
+		errors.Is(err, domain.ErrResetTokenExpired):
 		status = http.StatusUnauthorized
 		code = "UNAUTHORIZED"
 

@@ -56,16 +56,17 @@ func main() {
 
 	// 3. PostgreSQL Database Initialization
 	var (
-		db           *postgres.DB
-		userRepo     domain.UserRepository
-		workRepo     domain.WorkRepository
-		editionRepo  domain.EditionRepository
-		wishlistRepo domain.WishlistRepository
-		searchRepo   domain.SearchCacheRepository
+		db            *postgres.DB
+		userRepo      domain.UserRepository
+		workRepo      domain.WorkRepository
+		editionRepo   domain.EditionRepository
+		wishlistRepo  domain.WishlistRepository
+		searchRepo    domain.SearchCacheRepository
+		tokenRepo     domain.TokenRepository
+		analyticsRepo domain.AnalyticsRepository
 	)
 
 	dbURL := os.Getenv("DATABASE_URL")
-	// If the user hasn't configured a real Neon URL yet, provide a graceful mock fallback
 	isPlaceholderDB := dbURL == "" || dbURL == "postgres://user:password@ep-project.aws.neon.tech/imprint?sslmode=require"
 
 	if !isPlaceholderDB {
@@ -100,6 +101,8 @@ func main() {
 			editionRepo = postgres.NewEditionRepo(db.Pool)
 			wishlistRepo = postgres.NewWishlistRepo(db.Pool)
 			searchRepo = postgres.NewSearchCacheRepo(db.Pool)
+			tokenRepo = postgres.NewPostgresTokenRepo(db.Pool)
+			analyticsRepo = postgres.NewAnalyticsRepo(db.Pool)
 		}
 	} else {
 		logger.Info("no live database URL configured in .env - running with in-memory persistence fallback")
@@ -115,6 +118,11 @@ func main() {
 		editionRepo = &memEditionRepo{editions: make(map[string]*domain.Edition)}
 		wishlistRepo = &memWishlistRepo{items: make(map[string]*domain.WishlistItem)}
 		searchRepo = &memSearchCacheRepo{entries: make(map[string]*domain.SearchCacheEntry)}
+		tokenRepo = &memTokenRepo{
+			refreshTokens: make(map[string]*domain.RefreshToken),
+			resetTokens:   make(map[string]*domain.PasswordResetToken),
+		}
+		analyticsRepo = &memAnalyticsRepo{items: wishlistRepo}
 	}
 
 	// 4. External Book Provider Setup (Open Library + Google Books Hybrid MultiProvider)
@@ -128,23 +136,28 @@ func main() {
 	provider := composite.NewMultiProvider(olClient, gbClient)
 
 	// 5. Application Services & Security Setup
-	jwtSvc := security.NewJWTService(os.Getenv("JWT_SECRET"), 7*24*time.Hour)
-	authSvc := app.NewAuthService(userRepo, jwtSvc)
+	jwtSvc := security.NewJWTService(os.Getenv("JWT_SECRET"), 15*time.Minute) // 15-minute access tokens
+	authSvc := app.NewAuthService(userRepo, tokenRepo, jwtSvc)
 	catalogSvc := app.NewCatalogService(provider, workRepo, editionRepo, searchRepo)
 	wishlistSvc := app.NewWishlistService(wishlistRepo, catalogSvc, workRepo, editionRepo)
+	analyticsSvc := app.NewAnalyticsService(analyticsRepo)
+	rateLimiter := security.NewRateLimiter(10 * time.Minute)
 
 	// 6. HTTP Handlers & Router
 	authHandler := api.NewAuthHandler(authSvc)
 	catalogHandler := api.NewCatalogHandler(catalogSvc)
 	wishlistHandler := api.NewWishlistHandler(wishlistSvc)
+	analyticsHandler := api.NewAnalyticsHandler(analyticsSvc)
 
 	router := api.NewRouter(api.RouterConfig{
-		CatalogHandler:  catalogHandler,
-		WishlistHandler: wishlistHandler,
-		AuthHandler:     authHandler,
-		JWTService:      jwtSvc,
-		Logger:          logger,
-		DB:              db,
+		CatalogHandler:   catalogHandler,
+		WishlistHandler:  wishlistHandler,
+		AuthHandler:      authHandler,
+		AnalyticsHandler: analyticsHandler,
+		JWTService:       jwtSvc,
+		RateLimiter:      rateLimiter,
+		Logger:           logger,
+		DB:               db,
 	})
 
 	// 7. Server with Graceful Shutdown
@@ -269,6 +282,21 @@ func (m *memWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain.
 	}
 	return res, nil
 }
+func (m *memWishlistRepo) GetUserTags(ctx context.Context, uID string) ([]domain.TagCount, error) {
+	tagMap := make(map[string]int)
+	for _, it := range m.items {
+		if it.UserID == uID {
+			for _, t := range it.Tags {
+				tagMap[t]++
+			}
+		}
+	}
+	var res []domain.TagCount
+	for t, c := range tagMap {
+		res = append(res, domain.TagCount{Tag: t, Count: c})
+	}
+	return res, nil
+}
 func (m *memWishlistRepo) Update(ctx context.Context, item *domain.WishlistItem) error {
 	m.items[item.ID] = item
 	return nil
@@ -347,6 +375,126 @@ func (m *memUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, erro
 	return u, nil
 }
 
+func (m *memUserRepo) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
+	if u, ok := m.users[userID]; ok {
+		u.PasswordHash = passwordHash
+		u.UpdatedAt = time.Now()
+		return nil
+	}
+	return domain.ErrUserNotFound
+}
+
+type memTokenRepo struct {
+	mu            sync.Mutex
+	refreshTokens map[string]*domain.RefreshToken
+	resetTokens   map[string]*domain.PasswordResetToken
+}
+
+func (m *memTokenRepo) SaveRefreshToken(ctx context.Context, t *domain.RefreshToken) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshTokens[t.TokenHash] = t
+	return nil
+}
+
+func (m *memTokenRepo) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.refreshTokens[tokenHash]; ok {
+		return t, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *memTokenRepo) RevokeRefreshToken(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.refreshTokens {
+		if t.ID == id {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+
+func (m *memTokenRepo) RevokeTokenFamily(ctx context.Context, familyID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.refreshTokens {
+		if t.FamilyID == familyID {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+
+func (m *memTokenRepo) RevokeUserTokens(ctx context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.refreshTokens {
+		if t.UserID == userID {
+			t.IsRevoked = true
+		}
+	}
+	return nil
+}
+
+func (m *memTokenRepo) SavePasswordResetToken(ctx context.Context, t *domain.PasswordResetToken) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetTokens[t.TokenHash] = t
+	return nil
+}
+
+func (m *memTokenRepo) GetValidPasswordResetToken(ctx context.Context, tokenHash string) (*domain.PasswordResetToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.resetTokens[tokenHash]; ok {
+		if !t.IsExpired() {
+			return t, nil
+		}
+	}
+	return nil, domain.ErrResetTokenExpired
+}
+
+func (m *memTokenRepo) MarkPasswordResetUsed(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.resetTokens {
+		if t.ID == id {
+			now := time.Now()
+			t.UsedAt = &now
+		}
+	}
+	return nil
+}
+
+type memAnalyticsRepo struct {
+	items domain.WishlistRepository
+}
+
+func (m *memAnalyticsRepo) GetReadingStats(ctx context.Context, userID string, year int) (*domain.ReadingStats, error) {
+	all, _ := m.items.ListByUser(ctx, userID, nil)
+	stats := &domain.ReadingStats{
+		CurrentYear:        year,
+		TopGenres:          []domain.GenreCount{},
+		TopAuthors:         []domain.AuthorCount{},
+		FormatDistribution: make(map[string]int),
+	}
+	stats.TotalBooks = len(all)
+	for _, it := range all {
+		if it.Status == domain.StatusCurrentlyReading {
+			stats.CurrentlyReading++
+		} else if it.Status == domain.StatusWantToRead {
+			stats.WantToRead++
+		} else if it.Status == domain.StatusFinished {
+			stats.BooksFinishedYear++
+			stats.TotalPagesRead += 320
+		}
+	}
+	return stats, nil
+}
+
 type memSearchCacheRepo struct {
 	mu      sync.RWMutex
 	entries map[string]*domain.SearchCacheEntry
@@ -403,4 +551,3 @@ func (m *memSearchCacheRepo) PruneExpired(ctx context.Context) (int64, error) {
 	}
 	return count, nil
 }
-

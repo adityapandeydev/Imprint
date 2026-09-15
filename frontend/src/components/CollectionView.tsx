@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BookMarked,
@@ -9,10 +9,20 @@ import {
   UserPlus,
   ShieldCheck,
   Sparkles,
+  BarChart3,
+  Download,
+  Upload,
+  Tag,
+  Plus,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import { WishlistCard } from './WishlistCard';
+import { ProfileStatsModal } from './ProfileStatsModal';
+import { GoodreadsImportModal } from './GoodreadsImportModal';
 import { useAuth } from '../context/AuthContext';
-import type { WishlistItem, ReadingStatus } from '../types/api';
+import { api } from '../lib/api';
+import type { WishlistItem, ReadingStatus, TagCount } from '../types/api';
 
 interface CollectionViewProps {
   items: WishlistItem[];
@@ -21,13 +31,21 @@ interface CollectionViewProps {
   onUpdatePriority: (id: string, priority: number) => void;
   onUpdateRating: (id: string, rating: number) => void;
   onUpdateNotes: (id: string, notes: string) => void;
+  onUpdateTags?: (id: string, tags: string[]) => void;
   onDelete: (id: string) => void;
+  onRefreshCollection?: () => void;
   onGoToDiscover: () => void;
   onInspectEditions?: (item: WishlistItem) => void;
 }
 
 type FilterOption = 'ALL' | ReadingStatus;
 type SortOption = 'priority' | 'newest' | 'title';
+
+const SORT_OPTIONS: { id: SortOption; label: string }[] = [
+  { id: 'priority', label: 'Priority' },
+  { id: 'newest', label: 'Recently Added' },
+  { id: 'title', label: 'Title (A-Z)' },
+];
 
 export const CollectionView: React.FC<CollectionViewProps> = ({
   items,
@@ -36,13 +54,48 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
   onUpdatePriority,
   onUpdateRating,
   onUpdateNotes,
+  onUpdateTags,
   onDelete,
+  onRefreshCollection,
   onGoToDiscover,
   onInspectEditions,
 }) => {
-  const { isAuthenticated, isLoading: isAuthLoading, openAuthModal } = useAuth();
+  const { user, isAuthenticated, isLoading: isAuthLoading, openAuthModal } = useAuth();
   const [activeFilter, setActiveFilter] = useState<FilterOption>('ALL');
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('priority');
+  const [serverTags, setServerTags] = useState<TagCount[]>([]);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
+  const [isCreatingTag, setIsCreatingTag] = useState(false);
+  const [newShelfName, setNewShelfName] = useState('');
+
+  // Fetch user tags when collection changes or loads
+  useEffect(() => {
+    if (isAuthenticated) {
+      api.getTags().then(setServerTags).catch(() => {});
+    }
+  }, [items, isAuthenticated]);
+
+  // Aggregate active tags from both server and current memory state
+  const allTags = useMemo(() => {
+    const map = new Map<string, number>();
+    // First from items
+    for (const item of items) {
+      for (const t of item.tags || []) {
+        map.set(t, (map.get(t) || 0) + 1);
+      }
+    }
+    // Then combine with server tags
+    for (const st of serverTags) {
+      if (!map.has(st.tag)) {
+        map.set(st.tag, st.count);
+      }
+    }
+    return Array.from(map.entries()).map(([tag, count]) => ({ tag, count }));
+  }, [items, serverTags]);
 
   // Count items per filter tab (Unconditionally declared to follow React Rules of Hooks)
   const counts = useMemo(() => {
@@ -58,8 +111,17 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
   // Filtered and sorted items (Unconditionally declared to follow React Rules of Hooks)
   const displayItems = useMemo(() => {
     let list = items;
+
+    // Filter by reading status tab
     if (activeFilter !== 'ALL') {
       list = list.filter((item) => item.status === activeFilter);
+    }
+
+    // Filter by custom shelf tag
+    if (selectedTag) {
+      list = list.filter((item) =>
+        (item.tags || []).some((t) => t.toLowerCase() === selectedTag.toLowerCase())
+      );
     }
 
     return [...list].sort((a, b) => {
@@ -80,7 +142,25 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
       const dateB = new Date(b.created_at).getTime();
       return dateB - dateA;
     });
-  }, [items, activeFilter, sortBy]);
+  }, [items, activeFilter, selectedTag, sortBy]);
+
+  const handleExport = async (format: 'csv' | 'json') => {
+    setIsExportMenuOpen(false);
+    try {
+      await api.exportCollection(format);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Export failed');
+    }
+  };
+
+  const handleCreateShelf = () => {
+    const clean = newShelfName.trim();
+    if (clean) {
+      setSelectedTag(clean);
+      setNewShelfName('');
+      setIsCreatingTag(false);
+    }
+  };
 
   if (isAuthLoading) {
     return (
@@ -153,7 +233,7 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
           <div className="p-3 bg-surface rounded-xl border border-border-subtle">
             <Lock className="w-4 h-4 text-accent mb-1" />
             <p className="text-xs font-semibold text-text-main">Production Auth</p>
-            <p className="text-[11px] text-text-muted">JWT + HttpOnly cookie encryption</p>
+            <p className="text-[11px] text-text-muted">RFC 6819 Token Rotation + Rate Limiting</p>
           </div>
         </div>
       </div>
@@ -170,7 +250,7 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header & Controls */}
+      {/* Header & Main Toolbar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border-subtle pb-5">
         <div>
           <h1 className="font-serif text-3xl font-bold text-text-main flex items-center gap-2">
@@ -180,24 +260,68 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
             </span>
           </h1>
           <p className="text-xs sm:text-sm text-text-muted mt-0.5">
-            Organize your personal reading journey, priority list, and private notes.
+            Organize your personal reading journey, priority list, and custom shelves.
           </p>
         </div>
 
-        {/* Sort Dropdown */}
-        <div className="flex items-center gap-2 text-xs self-start md:self-auto">
-          <span className="text-text-muted flex items-center gap-1 font-medium">
-            <ArrowUpDown className="w-3.5 h-3.5 text-accent" /> Sort:
-          </span>
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortOption)}
-            className="bg-surface text-text-main border border-border-subtle rounded-xl px-3 py-1.5 outline-none focus:border-accent font-medium cursor-pointer shadow-xs"
+        {/* Action Toolbar */}
+        <div className="flex flex-wrap items-center gap-2.5 self-start md:self-auto">
+          {/* Reading Stats Button */}
+          <button
+            onClick={() => setIsStatsOpen(true)}
+            className="px-3 py-1.5 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            title="View reading velocity and analytics"
           >
-            <option value="priority">Highest Priority</option>
-            <option value="newest">Recently Added</option>
-            <option value="title">Title (A-Z)</option>
-          </select>
+            <BarChart3 className="w-3.5 h-3.5 text-amber-500" />
+            <span>Reading Stats</span>
+          </button>
+
+          {/* Import Goodreads Button */}
+          <button
+            onClick={() => setIsImportOpen(true)}
+            className="px-3 py-1.5 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            title="Import library from Goodreads CSV"
+          >
+            <Upload className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Import CSV</span>
+          </button>
+
+          {/* Export Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+              className="px-3 py-1.5 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+              title="Export library data"
+            >
+              <Download className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Export</span>
+            </button>
+
+            {isExportMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setIsExportMenuOpen(false)}
+                />
+                <div className="absolute right-0 mt-1.5 w-40 bg-surface border border-border-subtle rounded-xl shadow-xl z-40 p-1 space-y-0.5">
+                  <button
+                    onClick={() => handleExport('csv')}
+                    className="w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium text-text-main hover:bg-surface-hover flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Download CSV</span>
+                    <span className="text-[10px] text-text-muted">.csv</span>
+                  </button>
+                  <button
+                    onClick={() => handleExport('json')}
+                    className="w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium text-text-main hover:bg-surface-hover flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Download JSON</span>
+                    <span className="text-[10px] text-text-muted">.json</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -240,6 +364,135 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
         })}
       </div>
 
+      {/* Shelves & Sorting Line */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+        {/* Left: Custom Shelves / Tags */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-text-muted flex items-center gap-1 font-semibold text-[11px]">
+            <Tag className="w-3 h-3 text-accent" /> Shelves:
+          </span>
+
+          {/* All Shelves Tag */}
+          <button
+            onClick={() => setSelectedTag(null)}
+            className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
+              selectedTag === null
+                ? 'bg-accent text-canvas border-accent'
+                : 'bg-surface border-border-subtle text-text-muted hover:text-text-main'
+            }`}
+          >
+            All Shelves
+          </button>
+
+          {/* Individual Tags */}
+          {allTags.map((t) => {
+            const isSelected = selectedTag?.toLowerCase() === t.tag.toLowerCase();
+            return (
+              <button
+                key={t.tag}
+                onClick={() => setSelectedTag(isSelected ? null : t.tag)}
+                className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  isSelected
+                    ? 'bg-accent text-canvas border-accent'
+                    : 'bg-surface border-border-subtle text-text-muted hover:text-text-main hover:border-accent/40'
+                }`}
+              >
+                <span>#{t.tag}</span>
+                <span
+                  className={`text-[10px] px-1 rounded-full ${
+                    isSelected
+                      ? 'bg-canvas/20 text-canvas'
+                      : 'bg-surface-hover text-text-muted'
+                  }`}
+                >
+                  {t.count}
+                </span>
+              </button>
+            );
+          })}
+
+          {/* + New Shelf Action */}
+          {isCreatingTag ? (
+            <div className="flex items-center gap-1 bg-surface p-0.5 rounded-full border border-border-subtle">
+              <input
+                type="text"
+                value={newShelfName}
+                onChange={(e) => setNewShelfName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreateShelf();
+                  if (e.key === 'Escape') setIsCreatingTag(false);
+                }}
+                placeholder="Shelf name..."
+                className="px-2.5 py-0.5 bg-transparent text-text-main text-xs outline-none w-28"
+                autoFocus
+              />
+              <button
+                onClick={handleCreateShelf}
+                className="px-2 py-0.5 rounded-full bg-accent text-canvas text-xs font-bold hover:opacity-90 cursor-pointer"
+              >
+                Filter
+              </button>
+              <button
+                onClick={() => setIsCreatingTag(false)}
+                className="text-text-muted hover:text-text-main px-1 text-xs cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsCreatingTag(true)}
+              className="inline-flex items-center gap-1 text-[11px] text-accent font-semibold px-2.5 py-1 rounded-full bg-accent-soft/40 hover:bg-accent-soft border border-accent/20 transition-colors cursor-pointer"
+            >
+              <Plus className="w-3 h-3" />
+              <span>New Shelf</span>
+            </button>
+          )}
+        </div>
+
+        {/* Right: Custom Sort Dropdown */}
+        <div className="relative self-end sm:self-auto shrink-0">
+          <button
+            onClick={() => setIsSortMenuOpen(!isSortMenuOpen)}
+            className="px-3 py-1.5 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            title="Sort collection"
+          >
+            <ArrowUpDown className="w-3.5 h-3.5 text-accent" />
+            <span className="text-text-muted font-normal">Sort:</span>
+            <span>{SORT_OPTIONS.find((s) => s.id === sortBy)?.label || 'Priority'}</span>
+            <ChevronDown className="w-3 h-3 text-text-muted ml-0.5" />
+          </button>
+
+          {isSortMenuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-30"
+                onClick={() => setIsSortMenuOpen(false)}
+              />
+              <div className="absolute right-0 mt-1.5 w-44 bg-surface border border-border-subtle rounded-xl shadow-xl z-40 p-1 space-y-0.5">
+                {SORT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => {
+                      setSortBy(opt.id);
+                      setIsSortMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center justify-between cursor-pointer ${
+                      sortBy === opt.id
+                        ? 'bg-accent-soft text-accent font-semibold'
+                        : 'text-text-main hover:bg-surface-hover'
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {sortBy === opt.id && <Check className="w-3.5 h-3.5 text-accent" />}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Loading Skeletons */}
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
@@ -262,24 +515,37 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
           <BookMarked className="w-12 h-12 text-accent/60 mx-auto" />
           <div className="space-y-1">
             <h2 className="font-serif font-semibold text-lg text-text-main">
-              {activeFilter === 'ALL'
+              {selectedTag
+                ? `No books tagged with #${selectedTag}`
+                : activeFilter === 'ALL'
                 ? 'Your reading shelf is empty'
                 : `No books in "${filterTabs.find((t) => t.id === activeFilter)?.label}"`}
             </h2>
             <p className="text-xs sm:text-sm text-text-muted max-w-md mx-auto leading-relaxed">
-              {activeFilter === 'ALL'
-                ? 'Discover books in the catalog and click "Want to Read" to start curating your library.'
+              {selectedTag
+                ? 'Tag books in your collection with this shelf name to organize them here.'
+                : activeFilter === 'ALL'
+                ? 'Discover books in the catalog or import your Goodreads CSV to populate your personal collection.'
                 : 'Move books between reading states using the status menu on any saved title.'}
             </p>
           </div>
 
-          <button
-            onClick={onGoToDiscover}
-            className="px-5 py-2.5 bg-accent text-canvas rounded-xl text-xs sm:text-sm font-semibold hover:opacity-90 transition-opacity shadow-xs cursor-pointer inline-flex items-center gap-2"
-          >
-            <Compass className="w-4 h-4" />
-            <span>Discover Books</span>
-          </button>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={onGoToDiscover}
+              className="px-5 py-2.5 bg-accent text-canvas rounded-xl text-xs sm:text-sm font-semibold hover:opacity-90 transition-opacity shadow-xs cursor-pointer inline-flex items-center gap-2"
+            >
+              <Compass className="w-4 h-4" />
+              <span>Discover Books</span>
+            </button>
+            <button
+              onClick={() => setIsImportOpen(true)}
+              className="px-5 py-2.5 bg-surface hover:bg-surface-hover border border-border-subtle text-text-main rounded-xl text-xs sm:text-sm font-semibold transition-colors shadow-xs cursor-pointer inline-flex items-center gap-2"
+            >
+              <Upload className="w-4 h-4 text-emerald-400" />
+              <span>Import Goodreads</span>
+            </button>
+          </div>
         </div>
       ) : (
         /* Populated Shelf Grid */
@@ -293,6 +559,7 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
                 onUpdatePriority={onUpdatePriority}
                 onUpdateRating={onUpdateRating}
                 onUpdateNotes={onUpdateNotes}
+                onUpdateTags={onUpdateTags}
                 onDelete={onDelete}
                 onInspectEditions={onInspectEditions}
               />
@@ -300,6 +567,24 @@ export const CollectionView: React.FC<CollectionViewProps> = ({
           </AnimatePresence>
         </motion.div>
       )}
+
+      {/* Profile & Reading Velocity Analytics Modal */}
+      <ProfileStatsModal
+        isOpen={isStatsOpen}
+        onClose={() => setIsStatsOpen(false)}
+        userName={user?.display_name || user?.username || 'Reader'}
+      />
+
+      {/* Goodreads 1-Click CSV Migration Modal */}
+      <GoodreadsImportModal
+        isOpen={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        onSuccess={() => {
+          if (onRefreshCollection) {
+            onRefreshCollection();
+          }
+        }}
+      />
     </div>
   );
 };

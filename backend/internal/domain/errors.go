@@ -27,4 +27,8 @@ var (
 
 	ErrProviderTimeout     = errors.New("book metadata provider timed out")
 	ErrProviderUnavailable = errors.New("book metadata provider is temporarily unavailable")
+
+	ErrTokenRevoked       = errors.New("token has been revoked")
+	ErrTokenReused        = errors.New("refresh token reuse detected")
+	ErrResetTokenExpired  = errors.New("password reset token is invalid or expired")
 )

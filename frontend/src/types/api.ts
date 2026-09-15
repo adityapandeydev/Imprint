@@ -63,11 +63,70 @@ export interface WishlistItem {
   status: ReadingStatus;
   priority: number; // 1 to 5
   rating?: number;  // 1 to 5
+  tags: string[];
   notes?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface AddWishlistPayload {
+  work_id: string;
+  edition_id?: string;
+  status?: ReadingStatus;
+  priority?: number;
+  rating?: number;
+  tags?: string[];
+  notes?: string;
+  title?: string;
+  author?: string;
+  cover_url?: string;
+  original_year?: number;
+}
+
+export interface UpdateWishlistPayload {
+  edition_id?: string;
+  status?: ReadingStatus;
+  priority?: number;
+  rating?: number;
+  tags?: string[];
+  notes?: string;
+}
+
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+export interface GenreCount {
+  genre: string;
+  count: number;
+}
+
+export interface AuthorCount {
+  author: string;
+  count: number;
+}
+
+export interface ReadingStats {
+  total_books: number;
+  books_finished_year: number;
+  total_pages_read: number;
+  currently_reading: number;
+  want_to_read: number;
+  average_rating: number;
+  top_genres: GenreCount[];
+  top_authors: AuthorCount[];
+  format_distribution: Record<string, number>;
+  current_year: number;
+}
+
+export interface GoodreadsImportSummary {
+  total_rows: number;
+  imported_count: number;
+  skipped_count: number;
+  failed_count: number;
 }
 
 export interface ApiResponse<T> {
@@ -93,6 +152,7 @@ export interface User {
 
 export interface AuthTokens {
   access_token: string;
+  refresh_token?: string;
   expires_at: string;
   user: User;
 }
@@ -109,4 +169,3 @@ export interface LoginRequest {
   email_or_username?: string;
   password: string;
 }
-

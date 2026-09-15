@@ -1,10 +1,15 @@
 import type {
+  AddWishlistPayload,
   ApiResponse,
   AuthTokens,
   Edition,
+  GoodreadsImportSummary,
   LoginRequest,
+  ReadingStats,
   ReadingStatus,
   RegisterRequest,
+  TagCount,
+  UpdateWishlistPayload,
   User,
   WishlistItem,
   Work,
@@ -12,6 +17,7 @@ import type {
 
 const API_BASE = '/api/v1';
 const TOKEN_KEY = 'imprint_token';
+const REFRESH_TOKEN_KEY = 'imprint_refresh_token';
 
 export const tokenStorage = {
   get: (): string | null => {
@@ -21,9 +27,19 @@ export const tokenStorage = {
       return null;
     }
   },
-  set: (token: string): void => {
+  getRefresh: (): string | null => {
     try {
-      localStorage.setItem(TOKEN_KEY, token);
+      return localStorage.getItem(REFRESH_TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  },
+  set: (accessToken: string, refreshToken?: string): void => {
+    try {
+      localStorage.setItem(TOKEN_KEY, accessToken);
+      if (refreshToken) {
+        localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+      }
     } catch {
       // ignore
     }
@@ -31,19 +47,88 @@ export const tokenStorage = {
   clear: (): void => {
     try {
       localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(REFRESH_TOKEN_KEY);
     } catch {
       // ignore
     }
   },
 };
 
-function getAuthHeaders(customHeaders: Record<string, string> = {}): HeadersInit {
+function getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = { ...customHeaders };
   const token = tokenStorage.get();
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
+}
+
+let isRefreshing = false;
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = tokenStorage.getRefresh();
+  if (!refreshToken) {
+    tokenStorage.clear();
+    return null;
+  }
+
+  if (isRefreshing && refreshPromise) {
+    return refreshPromise;
+  }
+
+  isRefreshing = true;
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!res.ok) {
+        tokenStorage.clear();
+        return null;
+      }
+
+      const json: ApiResponse<AuthTokens> = await res.json();
+      const newTokens = json.data;
+      if (newTokens?.access_token) {
+        tokenStorage.set(newTokens.access_token, newTokens.refresh_token);
+        return newTokens.access_token;
+      }
+      tokenStorage.clear();
+      return null;
+    } catch {
+      tokenStorage.clear();
+      return null;
+    } finally {
+      isRefreshing = false;
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+  const customHeaders = (options.headers as Record<string, string>) || {};
+  const headers = getAuthHeaders(customHeaders);
+  const opts: RequestInit = { ...options, headers, credentials: 'include' };
+
+  let res = await fetch(url, opts);
+
+  // If unauthorized and we have a refresh token, attempt automatic token rotation
+  if (res.status === 401 && tokenStorage.getRefresh()) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      const retryHeaders = { ...headers, Authorization: `Bearer ${newToken}` };
+      res = await fetch(url, { ...opts, headers: retryHeaders });
+    }
+  }
+
+  return res;
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -89,7 +174,7 @@ export const api = {
     });
     const tokens = await handleResponse<AuthTokens>(res);
     if (tokens?.access_token) {
-      tokenStorage.set(tokens.access_token);
+      tokenStorage.set(tokens.access_token, tokens.refresh_token);
     }
     return tokens;
   },
@@ -109,18 +194,36 @@ export const api = {
     });
     const tokens = await handleResponse<AuthTokens>(res);
     if (tokens?.access_token) {
-      tokenStorage.set(tokens.access_token);
+      tokenStorage.set(tokens.access_token, tokens.refresh_token);
     }
     return tokens;
+  },
+
+  // Auth: Request password reset token
+  async forgotPassword(email: string): Promise<{ message: string; reset_token?: string }> {
+    const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    return handleResponse<{ message: string; reset_token?: string }>(res);
+  },
+
+  // Auth: Submit new password with recovery token
+  async resetPassword(token: string, newPassword: string): Promise<{ message: string }> {
+    const res = await fetch(`${API_BASE}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+    return handleResponse<{ message: string }>(res);
   },
 
   // Auth: Log out user
   async logout(): Promise<void> {
     try {
-      await fetch(`${API_BASE}/auth/logout`, {
+      await fetchWithAuth(`${API_BASE}/auth/logout`, {
         method: 'POST',
-        headers: getAuthHeaders(),
-        credentials: 'include',
       });
     } finally {
       tokenStorage.clear();
@@ -129,10 +232,7 @@ export const api = {
 
   // Auth: Get current authenticated user profile
   async getMe(): Promise<User> {
-    const res = await fetch(`${API_BASE}/auth/me`, {
-      headers: getAuthHeaders(),
-      credentials: 'include',
-    });
+    const res = await fetchWithAuth(`${API_BASE}/auth/me`);
     return handleResponse<User>(res);
   },
 
@@ -140,9 +240,7 @@ export const api = {
   async searchBooks(query: string, limit = 20, signal?: AbortSignal): Promise<Work[]> {
     if (!query.trim()) return [];
     const params = new URLSearchParams({ q: query, limit: String(limit) });
-    const res = await fetch(`${API_BASE}/books/search?${params.toString()}`, {
-      headers: getAuthHeaders(),
-      credentials: 'include',
+    const res = await fetchWithAuth(`${API_BASE}/books/search?${params.toString()}`, {
       signal,
     });
     const data = await handleResponse<Work[]>(res);
@@ -151,10 +249,7 @@ export const api = {
 
   // Get full work metadata and published editions
   async getBook(id: string): Promise<{ work: Work; editions: Edition[] }> {
-    const res = await fetch(`${API_BASE}/books/${encodeURIComponent(id)}`, {
-      headers: getAuthHeaders(),
-      credentials: 'include',
-    });
+    const res = await fetchWithAuth(`${API_BASE}/books/${encodeURIComponent(id)}`);
     const data = await handleResponse<{ work: Work; editions: Edition[] }>(res);
     return {
       work: data?.work,
@@ -164,10 +259,7 @@ export const api = {
 
   // Lookup edition and parent work by ISBN
   async getEditionByISBN(isbn: string): Promise<{ edition: Edition; work?: Work }> {
-    const res = await fetch(`${API_BASE}/editions/isbn/${encodeURIComponent(isbn)}`, {
-      headers: getAuthHeaders(),
-      credentials: 'include',
-    });
+    const res = await fetchWithAuth(`${API_BASE}/editions/isbn/${encodeURIComponent(isbn)}`);
     return handleResponse<{ edition: Edition; work?: Work }>(res);
   },
 
@@ -176,50 +268,33 @@ export const api = {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     const url = `${API_BASE}/wishlist${params.toString() ? `?${params.toString()}` : ''}`;
-    const res = await fetch(url, {
-      headers: getAuthHeaders(),
-      credentials: 'include',
-    });
+    const res = await fetchWithAuth(url);
     const data = await handleResponse<WishlistItem[]>(res);
     return Array.isArray(data) ? data : [];
   },
 
+  // Retrieve all custom tags / shelves for user
+  async getTags(): Promise<TagCount[]> {
+    const res = await fetchWithAuth(`${API_BASE}/wishlist/tags`);
+    const data = await handleResponse<{ tags: TagCount[] }>(res);
+    return Array.isArray(data?.tags) ? data.tags : [];
+  },
+
   // Add work / edition to collection (Protected)
-  async addToWishlist(payload: {
-    work_id: string;
-    edition_id?: string;
-    status?: ReadingStatus;
-    priority?: number;
-    notes?: string;
-    title?: string;
-    author?: string;
-    cover_url?: string;
-    original_year?: number;
-  }): Promise<WishlistItem> {
-    const res = await fetch(`${API_BASE}/wishlist`, {
+  async addToWishlist(payload: AddWishlistPayload): Promise<WishlistItem> {
+    const res = await fetchWithAuth(`${API_BASE}/wishlist`, {
       method: 'POST',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     return handleResponse<WishlistItem>(res);
   },
 
   // Update wishlist entry (Protected)
-  async updateWishlistItem(
-    id: string,
-    payload: {
-      edition_id?: string;
-      status?: ReadingStatus;
-      priority?: number;
-      rating?: number;
-      notes?: string;
-    }
-  ): Promise<WishlistItem> {
-    const res = await fetch(`${API_BASE}/wishlist/${encodeURIComponent(id)}`, {
+  async updateWishlistItem(id: string, payload: UpdateWishlistPayload): Promise<WishlistItem> {
+    const res = await fetchWithAuth(`${API_BASE}/wishlist/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     return handleResponse<WishlistItem>(res);
@@ -227,11 +302,55 @@ export const api = {
 
   // Delete item from collection (Protected)
   async deleteWishlistItem(id: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/wishlist/${encodeURIComponent(id)}`, {
+    const res = await fetchWithAuth(`${API_BASE}/wishlist/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: getAuthHeaders(),
-      credentials: 'include',
     });
     return handleResponse<void>(res);
+  },
+
+  // Upload and import Goodreads CSV export
+  async importGoodreads(file: File): Promise<GoodreadsImportSummary> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const token = tokenStorage.get();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${API_BASE}/wishlist/import/goodreads`, {
+      method: 'POST',
+      headers,
+      credentials: 'include',
+      body: formData,
+    });
+    return handleResponse<GoodreadsImportSummary>(res);
+  },
+
+  // Export full user library as CSV or JSON
+  async exportCollection(format: 'csv' | 'json' = 'csv'): Promise<void> {
+    const res = await fetchWithAuth(`${API_BASE}/wishlist/export?format=${format}`);
+    if (!res.ok) {
+      throw new Error(`Export failed: ${res.statusText}`);
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `imprint_library_${new Date().toISOString().split('T')[0]}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  },
+
+  // Fetch reader statistics & reading velocity
+  async getReadingStats(year?: number): Promise<ReadingStats> {
+    const query = year ? `?year=${year}` : '';
+    const res = await fetchWithAuth(`${API_BASE}/users/stats${query}`);
+    return handleResponse<ReadingStats>(res);
   },
 };
