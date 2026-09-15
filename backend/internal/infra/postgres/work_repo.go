@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -36,12 +37,13 @@ func (r *WorkRepo) SaveWork(ctx context.Context, work *domain.Work) error {
 
 	if work.OpenLibraryWorkID != "" {
 		query = `
-			INSERT INTO works (title, subtitle, original_year, description, cover_url, open_library_work_id, subject_tags)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			INSERT INTO works (title, subtitle, original_year, description, cover_url, open_library_work_id, google_books_id, subject_tags)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8)
 			ON CONFLICT (open_library_work_id) DO UPDATE SET
 				title = EXCLUDED.title,
 				description = COALESCE(NULLIF(EXCLUDED.description, ''), works.description),
 				cover_url = COALESCE(NULLIF(EXCLUDED.cover_url, ''), works.cover_url),
+				google_books_id = COALESCE(NULLIF(EXCLUDED.google_books_id, ''), works.google_books_id),
 				updated_at = NOW()
 			RETURNING id, created_at, updated_at;
 		`
@@ -52,9 +54,32 @@ func (r *WorkRepo) SaveWork(ctx context.Context, work *domain.Work) error {
 			work.Description,
 			work.CoverURL,
 			work.OpenLibraryWorkID,
+			work.GoogleBooksID,
 			work.SubjectTags,
 		}
-	} else if work.ID != "" {
+	} else if work.GoogleBooksID != "" {
+		query = `
+			INSERT INTO works (title, subtitle, original_year, description, cover_url, open_library_work_id, google_books_id, subject_tags)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8)
+			ON CONFLICT (google_books_id) DO UPDATE SET
+				title = EXCLUDED.title,
+				description = COALESCE(NULLIF(EXCLUDED.description, ''), works.description),
+				cover_url = COALESCE(NULLIF(EXCLUDED.cover_url, ''), works.cover_url),
+				open_library_work_id = COALESCE(NULLIF(EXCLUDED.open_library_work_id, ''), works.open_library_work_id),
+				updated_at = NOW()
+			RETURNING id, created_at, updated_at;
+		`
+		args = []any{
+			work.Title,
+			work.Subtitle,
+			work.OriginalYear,
+			work.Description,
+			work.CoverURL,
+			work.OpenLibraryWorkID,
+			work.GoogleBooksID,
+			work.SubjectTags,
+		}
+	} else if work.ID != "" && domain.IsUUID(work.ID) {
 		query = `
 			INSERT INTO works (id, title, subtitle, original_year, description, cover_url, subject_tags)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -141,15 +166,24 @@ func (r *WorkRepo) SaveWork(ctx context.Context, work *domain.Work) error {
 }
 
 // GetWorkByID retrieves a Work and its Authors by UUID.
+// If id is not a valid UUID format, it automatically delegates to OpenLibrary or GoogleBooks lookup.
 func (r *WorkRepo) GetWorkByID(ctx context.Context, id string) (*domain.Work, error) {
+	trimmed := strings.TrimSpace(id)
+	if !domain.IsUUID(trimmed) {
+		if strings.HasPrefix(trimmed, "OL") || strings.Contains(trimmed, "/works/OL") {
+			return r.GetWorkByOpenLibraryID(ctx, trimmed)
+		}
+		return r.GetWorkByGoogleBooksID(ctx, trimmed)
+	}
+
 	var work domain.Work
 	query := `
 		SELECT id, title, subtitle, original_year, description, cover_url, 
-		       COALESCE(open_library_work_id, ''), subject_tags, created_at, updated_at
+		       COALESCE(open_library_work_id, ''), COALESCE(google_books_id, ''), subject_tags, created_at, updated_at
 		FROM works
 		WHERE id = $1;
 	`
-	err := r.pool.QueryRow(ctx, query, id).Scan(
+	err := r.pool.QueryRow(ctx, query, trimmed).Scan(
 		&work.ID,
 		&work.Title,
 		&work.Subtitle,
@@ -157,6 +191,7 @@ func (r *WorkRepo) GetWorkByID(ctx context.Context, id string) (*domain.Work, er
 		&work.Description,
 		&work.CoverURL,
 		&work.OpenLibraryWorkID,
+		&work.GoogleBooksID,
 		&work.SubjectTags,
 		&work.CreatedAt,
 		&work.UpdatedAt,
@@ -182,7 +217,7 @@ func (r *WorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) (*do
 	var work domain.Work
 	query := `
 		SELECT id, title, subtitle, original_year, description, cover_url, 
-		       COALESCE(open_library_work_id, ''), subject_tags, created_at, updated_at
+		       COALESCE(open_library_work_id, ''), COALESCE(google_books_id, ''), subject_tags, created_at, updated_at
 		FROM works
 		WHERE open_library_work_id = $1;
 	`
@@ -194,6 +229,7 @@ func (r *WorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) (*do
 		&work.Description,
 		&work.CoverURL,
 		&work.OpenLibraryWorkID,
+		&work.GoogleBooksID,
 		&work.SubjectTags,
 		&work.CreatedAt,
 		&work.UpdatedAt,
@@ -214,6 +250,44 @@ func (r *WorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) (*do
 	return &work, nil
 }
 
+// GetWorkByGoogleBooksID retrieves a Work by its Google Books volume ID (e.g. "v-pvEAAAQBAJ").
+func (r *WorkRepo) GetWorkByGoogleBooksID(ctx context.Context, gbid string) (*domain.Work, error) {
+	var work domain.Work
+	query := `
+		SELECT id, title, subtitle, original_year, description, cover_url, 
+		       COALESCE(open_library_work_id, ''), COALESCE(google_books_id, ''), subject_tags, created_at, updated_at
+		FROM works
+		WHERE google_books_id = $1;
+	`
+	err := r.pool.QueryRow(ctx, query, gbid).Scan(
+		&work.ID,
+		&work.Title,
+		&work.Subtitle,
+		&work.OriginalYear,
+		&work.Description,
+		&work.CoverURL,
+		&work.OpenLibraryWorkID,
+		&work.GoogleBooksID,
+		&work.SubjectTags,
+		&work.CreatedAt,
+		&work.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrWorkNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying work by google books id: %w", err)
+	}
+
+	authors, err := r.getAuthorsForWork(ctx, work.ID)
+	if err != nil {
+		return nil, err
+	}
+	work.Authors = authors
+
+	return &work, nil
+}
+
 // SearchLocalWorks queries the local database catalog using full-text search.
 func (r *WorkRepo) SearchLocalWorks(ctx context.Context, queryString string, limit int) ([]domain.Work, error) {
 	if limit <= 0 {
@@ -222,10 +296,15 @@ func (r *WorkRepo) SearchLocalWorks(ctx context.Context, queryString string, lim
 
 	query := `
 		SELECT id, title, subtitle, original_year, description, cover_url, 
-		       COALESCE(open_library_work_id, ''), subject_tags, created_at, updated_at
+		       COALESCE(open_library_work_id, ''), COALESCE(google_books_id, ''), subject_tags, created_at, updated_at
 		FROM works
 		WHERE to_tsvector('english', title) @@ plainto_tsquery('english', $1)
 		   OR title ILIKE '%' || $1 || '%'
+		   OR EXISTS (
+		       SELECT 1 FROM work_authors wa
+		       JOIN authors a ON wa.author_id = a.id
+		       WHERE wa.work_id = works.id AND a.name ILIKE '%' || $1 || '%'
+		   )
 		ORDER BY ts_rank(to_tsvector('english', title), plainto_tsquery('english', $1)) DESC, created_at DESC
 		LIMIT $2;
 	`
@@ -246,6 +325,7 @@ func (r *WorkRepo) SearchLocalWorks(ctx context.Context, queryString string, lim
 			&w.Description,
 			&w.CoverURL,
 			&w.OpenLibraryWorkID,
+			&w.GoogleBooksID,
 			&w.SubjectTags,
 			&w.CreatedAt,
 			&w.UpdatedAt,

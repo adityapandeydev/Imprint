@@ -88,13 +88,14 @@ func mapVolumeToWork(v volumeResponseDTO) domain.Work {
 	}
 
 	return domain.Work{
-		ID:           v.ID,
-		Title:        title,
-		Authors:      authors,
-		Description:  strings.TrimSpace(v.VolumeInfo.Description),
-		OriginalYear: parseYear(v.VolumeInfo.PublishedDate),
-		CoverURL:     extractCoverURL(v.VolumeInfo.ImageLinks),
-		SubjectTags:  v.VolumeInfo.Categories,
+		ID:            v.ID,
+		GoogleBooksID: v.ID,
+		Title:         title,
+		Authors:       authors,
+		Description:   strings.TrimSpace(v.VolumeInfo.Description),
+		OriginalYear:  parseYear(v.VolumeInfo.PublishedDate),
+		CoverURL:      extractCoverURL(v.VolumeInfo.ImageLinks),
+		SubjectTags:   v.VolumeInfo.Categories,
 	}
 }
 
@@ -117,6 +118,7 @@ func mapVolumeToEdition(v volumeResponseDTO) domain.Edition {
 
 	return domain.Edition{
 		ID:              v.ID,
+		GoogleBooksID:   v.ID,
 		Title:           strings.TrimSpace(v.VolumeInfo.Title),
 		Format:          format,
 		Publisher:       strings.TrimSpace(v.VolumeInfo.Publisher),

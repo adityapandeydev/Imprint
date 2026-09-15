@@ -51,26 +51,25 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 	}
 
 	cacheKey := fmt.Sprintf("%s:%d", strings.ToLower(trimmed), limit)
+
+	// 1. ALWAYS check local catalog first — books the user has already saved
+	// must always appear in results regardless of cache or provider state.
+	localWorks, _ := s.workRepo.SearchLocalWorks(ctx, trimmed, limit)
+
+	// 2. Check in-memory cache for provider results
 	if cached, ok := s.searchCache.Load(cacheKey); ok {
-		return cached.([]domain.Work), nil
+		return s.mergeLocalAndProvider(localWorks, cached.([]domain.Work), trimmed, limit), nil
 	}
 
-	// 1. Check persistent database cache (Neon PostgreSQL search_queries table)
+	// 3. Check persistent database cache (Neon PostgreSQL search_queries table)
 	if s.searchCacheRepo != nil {
 		if entry, err := s.searchCacheRepo.GetCachedQuery(ctx, trimmed); err == nil && entry != nil && len(entry.Results) > 0 {
-			res := entry.Results
-			if len(res) > limit {
-				res = res[:limit]
-			}
-			s.searchCache.Store(cacheKey, res)
-			return res, nil
+			s.searchCache.Store(cacheKey, entry.Results)
+			return s.mergeLocalAndProvider(localWorks, entry.Results, trimmed, limit), nil
 		}
 	}
 
-	// 2. Check local catalog first
-	localWorks, _ := s.workRepo.SearchLocalWorks(ctx, trimmed, limit)
-
-	// 3. Query external provider
+	// 4. Query external provider (cache miss)
 	providerWorks, err := s.provider.Search(ctx, domain.ProviderSearchParams{
 		Query: trimmed,
 		Limit: limit,
@@ -79,38 +78,52 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 		return nil, fmt.Errorf("searching book provider: %w", err)
 	}
 
-	// 4. Merge and deduplicate by OpenLibraryWorkID or Title
+	// 4. Merge and deduplicate by OpenLibraryWorkID, GoogleBooksID, or Title
 	seen := make(map[string]bool)
 	var combined []domain.Work
 
-	for _, w := range localWorks {
-		key := strings.ToLower(w.Title)
+	markSeen := func(w domain.Work) {
 		if w.OpenLibraryWorkID != "" {
-			key = w.OpenLibraryWorkID
+			seen["ol:"+w.OpenLibraryWorkID] = true
 		}
-		seen[key] = true
-		combined = append(combined, w)
+		if w.GoogleBooksID != "" {
+			seen["gb:"+w.GoogleBooksID] = true
+		}
+		seen["t:"+strings.ToLower(w.Title)] = true
+	}
+	isSeen := func(w domain.Work) bool {
+		if w.OpenLibraryWorkID != "" && seen["ol:"+w.OpenLibraryWorkID] {
+			return true
+		}
+		if w.GoogleBooksID != "" && seen["gb:"+w.GoogleBooksID] {
+			return true
+		}
+		return seen["t:"+strings.ToLower(w.Title)]
+	}
+
+	for _, w := range localWorks {
+		if !isSeen(w) {
+			markSeen(w)
+			combined = append(combined, w)
+		}
 	}
 
 	for _, w := range providerWorks {
-		key := strings.ToLower(w.Title)
-		if w.OpenLibraryWorkID != "" {
-			key = w.OpenLibraryWorkID
-		}
-		if !seen[key] {
-			seen[key] = true
+		if !isSeen(w) {
+			markSeen(w)
 			combined = append(combined, w)
-		}
-		if len(combined) >= limit {
-			break
 		}
 	}
 
-	// 5. Apply Exact-Match #1 dynamic ranker
+	// 5. Apply Exact-Match #1 dynamic ranker across all candidate works
 	combined = domain.RankWorks(combined, trimmed)
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
 
-	// In-memory instant cache for repeat queries
-	s.searchCache.Store(cacheKey, combined)
+	// In-memory cache stores the provider results so local DB results are
+	// always freshly merged on subsequent cache hits.
+	s.searchCache.Store(cacheKey, providerWorks)
 
 	// 6. Asynchronously persist discovered works and query cache in background
 	// This ensures the HTTP search response is returned immediately to the reader in ~350ms
@@ -138,6 +151,52 @@ func (s *CatalogService) Search(ctx context.Context, query string, limit int) ([
 	return combined, nil
 }
 
+// mergeLocalAndProvider merges locally saved books with provider/cached results,
+// deduplicating and ranking them. This ensures books already in the user's local
+// catalog always appear in search results even when served from cache.
+func (s *CatalogService) mergeLocalAndProvider(local, provider []domain.Work, query string, limit int) []domain.Work {
+	seen := make(map[string]bool)
+	var combined []domain.Work
+
+	markSeen := func(w domain.Work) {
+		if w.OpenLibraryWorkID != "" {
+			seen["ol:"+w.OpenLibraryWorkID] = true
+		}
+		if w.GoogleBooksID != "" {
+			seen["gb:"+w.GoogleBooksID] = true
+		}
+		seen["t:"+strings.ToLower(w.Title)] = true
+	}
+	isSeen := func(w domain.Work) bool {
+		if w.OpenLibraryWorkID != "" && seen["ol:"+w.OpenLibraryWorkID] {
+			return true
+		}
+		if w.GoogleBooksID != "" && seen["gb:"+w.GoogleBooksID] {
+			return true
+		}
+		return seen["t:"+strings.ToLower(w.Title)]
+	}
+
+	for _, w := range local {
+		if !isSeen(w) {
+			markSeen(w)
+			combined = append(combined, w)
+		}
+	}
+	for _, w := range provider {
+		if !isSeen(w) {
+			markSeen(w)
+			combined = append(combined, w)
+		}
+	}
+
+	combined = domain.RankWorks(combined, query)
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
+	return combined
+}
+
 // GetWork fetches a Work and its Editions.
 // If the work is not yet stored locally, it is fetched from the external provider
 // and lazily persisted into PostgreSQL (per ADR 0002).
@@ -152,11 +211,19 @@ func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.
 	var editions []domain.Edition
 	var err error
 
-	// 1. Try local lookup by UUID
-	work, err = s.workRepo.GetWorkByID(ctx, trimmed)
-	if err != nil {
-		// 2. Try local lookup by Open Library ID
+	// 1. Try local lookup by UUID, Open Library ID, or Google Books ID
+	if domain.IsUUID(trimmed) {
+		work, err = s.workRepo.GetWorkByID(ctx, trimmed)
+	} else if strings.HasPrefix(trimmed, "OL") || strings.Contains(trimmed, "/works/OL") {
 		work, err = s.workRepo.GetWorkByOpenLibraryID(ctx, trimmed)
+	} else {
+		work, err = s.workRepo.GetWorkByGoogleBooksID(ctx, trimmed)
+		if err != nil || work == nil {
+			if w, wErr := s.workRepo.GetWorkByID(ctx, trimmed); wErr == nil && w != nil {
+				work = w
+				err = nil
+			}
+		}
 	}
 
 	// 3. Fall back to external provider if not found locally
@@ -165,6 +232,9 @@ func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.
 		if err != nil {
 			return nil, nil, fmt.Errorf("fetching work from provider: %w", err)
 		}
+		if work == nil {
+			return nil, nil, domain.ErrWorkNotFound
+		}
 		// Lazily persist the Work to PostgreSQL
 		if saveErr := s.workRepo.SaveWork(ctx, work); saveErr != nil {
 			return nil, nil, fmt.Errorf("persisting work to database: %w", saveErr)
@@ -172,13 +242,16 @@ func (s *CatalogService) GetWork(ctx context.Context, idOrOLID string) (*domain.
 	}
 
 	// 4. Retrieve editions from local storage
-	if work.ID != "" {
+	if work != nil && work.ID != "" {
 		editions, _ = s.editionRepo.GetEditionsByWorkID(ctx, work.ID)
 	}
 
 	// 5. If no editions are stored locally yet, fetch from provider and cache them
 	if len(editions) == 0 {
 		lookupKey := work.OpenLibraryWorkID
+		if lookupKey == "" {
+			lookupKey = work.GoogleBooksID
+		}
 		if lookupKey == "" {
 			lookupKey = trimmed
 		}

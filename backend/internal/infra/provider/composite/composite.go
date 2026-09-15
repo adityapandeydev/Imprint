@@ -111,7 +111,7 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 
 	// Query secondary provider (Google Books) with bounded timeout
 	go func() {
-		sCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+		sCtx, cancel := context.WithTimeout(ctx, 3500*time.Millisecond)
 		defer cancel()
 		works, err := m.secondary.Search(sCtx, params)
 		secChan <- searchResult{works: works, err: err}
@@ -120,22 +120,35 @@ func (m *MultiProvider) Search(ctx context.Context, params domain.ProviderSearch
 	var pRes searchResult
 	var sRes searchResult
 
-	// Fast-Path Race: Don't block the reader on the slowest provider if fast results are ready
+	// Hybrid Race: Wait for results from both providers without prematurely dropping either.
+	// If one provider returns 0 results (e.g. Open Library for modern/regional books),
+	// we must not drop the complementary provider!
 	select {
 	case sRes = <-secChan:
-		if sRes.err == nil && len(sRes.works) >= 3 {
-			// Fast path: Google Books provided results. Give Open Library 400ms grace to enrich
+		if len(sRes.works) == 0 && sRes.err == nil {
+			// Google Books returned no results, wait for Open Library
+			pRes = <-primChan
+		} else {
+			// Google Books returned results; allow Open Library grace period to enrich
 			select {
 			case pRes = <-primChan:
-			case <-time.After(400 * time.Millisecond):
+			case <-time.After(1200 * time.Millisecond):
 			}
-		} else {
-			pRes = <-primChan
 		}
 	case pRes = <-primChan:
-		select {
-		case sRes = <-secChan:
-		case <-time.After(350 * time.Millisecond):
+		if len(pRes.works) == 0 && pRes.err == nil {
+			// Open Library returned no results (common for modern Indian/regional books).
+			// We must wait for Google Books to finish!
+			select {
+			case sRes = <-secChan:
+			case <-time.After(3000 * time.Millisecond):
+			}
+		} else {
+			// Open Library returned results; allow Google Books grace period to supply covers and contemporary titles
+			select {
+			case sRes = <-secChan:
+			case <-time.After(1500 * time.Millisecond):
+			}
 		}
 	case <-ctx.Done():
 		return nil, ctx.Err()

@@ -7,6 +7,7 @@ type WorkRepository interface {
 	SaveWork(ctx context.Context, work *Work) error
 	GetWorkByID(ctx context.Context, id string) (*Work, error)
 	GetWorkByOpenLibraryID(ctx context.Context, olid string) (*Work, error)
+	GetWorkByGoogleBooksID(ctx context.Context, gbid string) (*Work, error)
 	SearchLocalWorks(ctx context.Context, query string, limit int) ([]Work, error)
 }
 
@@ -16,6 +17,7 @@ type EditionRepository interface {
 	GetEditionByID(ctx context.Context, id string) (*Edition, error)
 	GetEditionByISBN(ctx context.Context, isbn string) (*Edition, error)
 	GetEditionsByWorkID(ctx context.Context, workID string) ([]Edition, error)
+	GetEditionByGoogleBooksID(ctx context.Context, gbid string) (*Edition, error)
 }
 
 // WishlistRepository defines persistence operations for user collection entries.

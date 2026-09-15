@@ -71,6 +71,15 @@ func (r *mockWorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) 
 	return w, nil
 }
 
+func (r *mockWorkRepo) GetWorkByGoogleBooksID(ctx context.Context, gbid string) (*domain.Work, error) {
+	for _, w := range r.worksByID {
+		if w.GoogleBooksID == gbid {
+			return w, nil
+		}
+	}
+	return nil, domain.ErrWorkNotFound
+}
+
 func (r *mockWorkRepo) SearchLocalWorks(ctx context.Context, query string, limit int) ([]domain.Work, error) {
 	var result []domain.Work
 	for _, w := range r.worksByID {
@@ -106,6 +115,15 @@ func (r *mockEditionRepo) GetEditionByID(ctx context.Context, id string) (*domai
 		return nil, domain.ErrEditionNotFound
 	}
 	return ed, nil
+}
+
+func (r *mockEditionRepo) GetEditionByGoogleBooksID(ctx context.Context, gbid string) (*domain.Edition, error) {
+	for _, ed := range r.editionsByID {
+		if ed.GoogleBooksID == gbid {
+			return ed, nil
+		}
+	}
+	return nil, domain.ErrEditionNotFound
 }
 
 func (r *mockEditionRepo) GetEditionByISBN(ctx context.Context, isbn string) (*domain.Edition, error) {

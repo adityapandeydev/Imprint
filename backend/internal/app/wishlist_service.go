@@ -129,33 +129,45 @@ func (s *WishlistService) AddToWishlist(ctx context.Context, req AddToWishlistRe
 	var editions []domain.Edition
 
 	// First try local lookups
-	if w, err := s.workRepo.GetWorkByID(ctx, req.WorkID); err == nil {
-		work = w
-	} else if w, err := s.workRepo.GetWorkByOpenLibraryID(ctx, req.WorkID); err == nil {
-		work = w
+	if domain.IsUUID(req.WorkID) {
+		if w, err := s.workRepo.GetWorkByID(ctx, req.WorkID); err == nil {
+			work = w
+		}
+	} else if strings.HasPrefix(req.WorkID, "OL") || strings.Contains(req.WorkID, "/works/OL") {
+		if w, err := s.workRepo.GetWorkByOpenLibraryID(ctx, req.WorkID); err == nil {
+			work = w
+		}
+	} else {
+		if w, err := s.workRepo.GetWorkByGoogleBooksID(ctx, req.WorkID); err == nil {
+			work = w
+		}
 	}
 
-	// If not found locally, but client provided metadata, save locally immediately
-	if work == nil && req.Title != "" {
-		newWork := &domain.Work{
-			Title:             req.Title,
-			CoverURL:          req.CoverURL,
-			OriginalYear:      req.OriginalYear,
-			OpenLibraryWorkID: req.WorkID,
-		}
-		if req.Author != "" {
-			newWork.Authors = []domain.Author{{Name: req.Author}}
-		}
-		_ = s.workRepo.SaveWork(ctx, newWork)
-		work = newWork
-	}
-
-	// If still not found, resolve from provider
+	// If not found locally, resolve from provider
 	if work == nil {
 		var err error
 		work, editions, err = s.catalogService.GetWork(ctx, req.WorkID)
 		if err != nil {
-			return nil, fmt.Errorf("resolving work: %w", err)
+			// Fallback: If client provided metadata, save locally immediately
+			if req.Title != "" {
+				newWork := &domain.Work{
+					Title:        req.Title,
+					CoverURL:     req.CoverURL,
+					OriginalYear: req.OriginalYear,
+				}
+				if strings.HasPrefix(req.WorkID, "OL") {
+					newWork.OpenLibraryWorkID = req.WorkID
+				} else {
+					newWork.GoogleBooksID = req.WorkID
+				}
+				if req.Author != "" {
+					newWork.Authors = []domain.Author{{Name: req.Author}}
+				}
+				_ = s.workRepo.SaveWork(ctx, newWork)
+				work = newWork
+			} else {
+				return nil, fmt.Errorf("resolving work: %w", err)
+			}
 		}
 	}
 

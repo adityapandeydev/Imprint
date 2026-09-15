@@ -53,6 +53,7 @@ type Edition struct {
 	CoverURL             string     `json:"cover_url,omitempty"`
 	Description          string     `json:"description,omitempty"`
 	OpenLibraryEditionID string     `json:"open_library_edition_id,omitempty"`
+	GoogleBooksID        string     `json:"google_books_id,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 }

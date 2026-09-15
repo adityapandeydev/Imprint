@@ -135,7 +135,10 @@ func (c *Client) Search(ctx context.Context, params domain.ProviderSearchParams)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	// Graceful degradation: treat rate-limit (429), server errors (5xx), and not-found as empty results
+	// so the composite provider can still return Open Library / local results instead of a 500.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode == http.StatusServiceUnavailable {
 		return []domain.Work{}, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -180,7 +183,8 @@ func (c *Client) GetWork(ctx context.Context, providerWorkID string) (*domain.Wo
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode == http.StatusServiceUnavailable {
 		return nil, domain.ErrWorkNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -221,7 +225,8 @@ func (c *Client) GetEditionByISBN(ctx context.Context, isbn string) (*domain.Edi
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests ||
+		resp.StatusCode == http.StatusServiceUnavailable {
 		return nil, nil, domain.ErrEditionNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -256,14 +261,35 @@ func (c *Client) GetEditionsForWork(ctx context.Context, providerWorkID string, 
 	}
 
 	var query string
-	work, err := c.GetWork(ctx, trimmed)
-	if err == nil && work != nil {
-		query = fmt.Sprintf("intitle:%s", work.Title)
-		if len(work.Authors) > 0 {
-			query += fmt.Sprintf(" inauthor:%s", work.Authors[0].Name)
+	var directEdition *domain.Edition
+
+	// If providerWorkID is a Google Books volume ID, fetch volume directly
+	if !strings.HasPrefix(trimmed, "OL") && !strings.Contains(trimmed, "/works/OL") {
+		endpoint := fmt.Sprintf("%s/volumes/%s", c.baseURL, url.PathEscape(trimmed))
+		if c.apiKey != "" {
+			endpoint += "?key=" + url.QueryEscape(c.apiKey)
 		}
-	} else {
-		// If providerWorkID was an Open Library ID, volume lookup won't match
+		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil); err == nil {
+			req.Header.Set("User-Agent", DefaultUserAgent)
+			req.Header.Set("Accept", "application/json")
+			if resp, err := c.httpClient.Do(req); err == nil {
+				if resp.StatusCode == http.StatusOK {
+					var volDTO volumeResponseDTO
+					if err := json.NewDecoder(resp.Body).Decode(&volDTO); err == nil {
+						ed := mapVolumeToEdition(volDTO)
+						directEdition = &ed
+						query = fmt.Sprintf("intitle:%s", volDTO.VolumeInfo.Title)
+						if len(volDTO.VolumeInfo.Authors) > 0 {
+							query += fmt.Sprintf(" inauthor:%s", volDTO.VolumeInfo.Authors[0])
+						}
+					}
+				}
+				resp.Body.Close()
+			}
+		}
+	}
+
+	if query == "" {
 		if strings.HasPrefix(trimmed, "OL") || strings.Contains(trimmed, "/works/OL") {
 			return nil, domain.ErrWorkNotFound
 		}
@@ -281,6 +307,9 @@ func (c *Client) GetEditionsForWork(ctx context.Context, providerWorkID string, 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
+		if directEdition != nil {
+			return []domain.Edition{*directEdition}, nil
+		}
 		return nil, err
 	}
 	req.Header.Set("User-Agent", DefaultUserAgent)
@@ -288,25 +317,44 @@ func (c *Client) GetEditionsForWork(ctx context.Context, providerWorkID string, 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if directEdition != nil {
+			return []domain.Edition{*directEdition}, nil
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if directEdition != nil {
+			return []domain.Edition{*directEdition}, nil
+		}
 		return []domain.Edition{}, nil
 	}
 
 	var listDTO volumeListResponseDTO
 	if err := json.NewDecoder(resp.Body).Decode(&listDTO); err != nil {
+		if directEdition != nil {
+			return []domain.Edition{*directEdition}, nil
+		}
 		return nil, err
 	}
 
-	editions := make([]domain.Edition, 0, len(listDTO.Items))
+	editions := make([]domain.Edition, 0, len(listDTO.Items)+1)
 	seenISBN := make(map[string]bool)
+
+	if directEdition != nil {
+		key := directEdition.ID
+		if directEdition.ISBN13 != nil {
+			key = *directEdition.ISBN13
+		} else if directEdition.ISBN10 != nil {
+			key = *directEdition.ISBN10
+		}
+		seenISBN[key] = true
+		editions = append(editions, *directEdition)
+	}
 
 	for _, item := range listDTO.Items {
 		ed := mapVolumeToEdition(item)
-		// Deduplicate editions by ISBN if available
 		key := ed.ID
 		if ed.ISBN13 != nil {
 			key = *ed.ISBN13

@@ -222,6 +222,14 @@ func (m *memWorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) (
 	}
 	return nil, domain.ErrWorkNotFound
 }
+func (m *memWorkRepo) GetWorkByGoogleBooksID(ctx context.Context, gbid string) (*domain.Work, error) {
+	for _, w := range m.works {
+		if w.GoogleBooksID == gbid {
+			return w, nil
+		}
+	}
+	return nil, domain.ErrWorkNotFound
+}
 func (m *memWorkRepo) SearchLocalWorks(ctx context.Context, query string, limit int) ([]domain.Work, error) {
 	return nil, nil
 }
@@ -238,6 +246,14 @@ func (m *memEditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) er
 func (m *memEditionRepo) GetEditionByID(ctx context.Context, id string) (*domain.Edition, error) {
 	if ed, ok := m.editions[id]; ok {
 		return ed, nil
+	}
+	return nil, domain.ErrEditionNotFound
+}
+func (m *memEditionRepo) GetEditionByGoogleBooksID(ctx context.Context, gbid string) (*domain.Edition, error) {
+	for _, ed := range m.editions {
+		if ed.GoogleBooksID == gbid {
+			return ed, nil
+		}
 	}
 	return nil, domain.ErrEditionNotFound
 }

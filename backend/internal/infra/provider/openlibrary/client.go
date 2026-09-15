@@ -78,37 +78,14 @@ func (c *Client) Name() string {
 	return "open_library"
 }
 
-// Search executes a book search against /search.json.
-func (c *Client) Search(ctx context.Context, params domain.ProviderSearchParams) ([]domain.Work, error) {
-	queryValues := url.Values{}
-
-	limit := params.Limit
-	if limit <= 0 {
-		limit = DefaultLimit
-	}
-	queryValues.Set("limit", fmt.Sprintf("%d", limit))
-
-	if params.Query != "" {
-		queryValues.Set("q", params.Query)
-	}
-	if params.Title != "" {
-		queryValues.Set("title", params.Title)
-	}
-	if params.Author != "" {
-		queryValues.Set("author", params.Author)
-	}
-	if params.ISBN != "" {
-		queryValues.Set("isbn", domain.CleanIdentifier(params.ISBN))
-	}
-	queryValues.Set("fields", "key,title,author_name,first_publish_year,cover_i,subject,edition_count")
-
+func (c *Client) executeSearch(ctx context.Context, queryValues url.Values) ([]domain.Work, error) {
 	reqURL := fmt.Sprintf("%s/search.json?%s", c.baseURL, queryValues.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating search request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Imprint/1.0 (https://github.com/adityapandeydev/Imprint)")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -135,6 +112,103 @@ func (c *Client) Search(ctx context.Context, params domain.ProviderSearchParams)
 	}
 
 	return works, nil
+}
+
+// Search executes a book search against /search.json.
+func (c *Client) Search(ctx context.Context, params domain.ProviderSearchParams) ([]domain.Work, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = DefaultLimit
+	}
+
+	// When a generic query is provided without explicit fields,
+	// search both ?title= (for exact book title matches) and ?q= (for broad full-text/author matches) concurrently.
+	// This prevents Open Library's OCR full-text search from burying exact title matches under obscure historical records!
+	if params.Query != "" && params.Title == "" && params.Author == "" && params.ISBN == "" {
+		titleVals := url.Values{}
+		titleVals.Set("title", params.Query)
+		titleVals.Set("limit", fmt.Sprintf("%d", limit))
+		titleVals.Set("fields", "key,title,author_name,first_publish_year,cover_i,subject,edition_count")
+
+		qVals := url.Values{}
+		qVals.Set("q", params.Query)
+		qVals.Set("limit", fmt.Sprintf("%d", limit))
+		qVals.Set("fields", "key,title,author_name,first_publish_year,cover_i,subject,edition_count")
+
+		type res struct {
+			works []domain.Work
+			err   error
+		}
+		titleChan := make(chan res, 1)
+		qChan := make(chan res, 1)
+
+		go func() {
+			w, err := c.executeSearch(ctx, titleVals)
+			titleChan <- res{works: w, err: err}
+		}()
+		go func() {
+			w, err := c.executeSearch(ctx, qVals)
+			qChan <- res{works: w, err: err}
+		}()
+
+		titleRes := <-titleChan
+		qRes := <-qChan
+
+		if titleRes.err != nil && qRes.err != nil {
+			return nil, titleRes.err
+		}
+
+		seen := make(map[string]bool)
+		var combined []domain.Work
+
+		// 1. Prioritize exact/fuzzy title matches first
+		for _, w := range titleRes.works {
+			key := w.OpenLibraryWorkID
+			if key == "" {
+				key = strings.ToLower(w.Title)
+			}
+			if !seen[key] {
+				seen[key] = true
+				combined = append(combined, w)
+			}
+		}
+
+		// 2. Append general query results
+		for _, w := range qRes.works {
+			key := w.OpenLibraryWorkID
+			if key == "" {
+				key = strings.ToLower(w.Title)
+			}
+			if !seen[key] {
+				seen[key] = true
+				combined = append(combined, w)
+			}
+			if len(combined) >= limit*2 {
+				break
+			}
+		}
+
+		return combined, nil
+	}
+
+	queryValues := url.Values{}
+	queryValues.Set("limit", fmt.Sprintf("%d", limit))
+
+	if params.Query != "" {
+		queryValues.Set("q", params.Query)
+	}
+	if params.Title != "" {
+		queryValues.Set("title", params.Title)
+	}
+	if params.Author != "" {
+		queryValues.Set("author", params.Author)
+	}
+	if params.ISBN != "" {
+		queryValues.Set("isbn", domain.CleanIdentifier(params.ISBN))
+	}
+	queryValues.Set("fields", "key,title,author_name,first_publish_year,cover_i,subject,edition_count")
+
+	return c.executeSearch(ctx, queryValues)
 }
 
 // GetWork fetches work details by Open Library Work ID (e.g., "OL27479W").

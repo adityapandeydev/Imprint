@@ -16,8 +16,10 @@ func TestSearch(t *testing.T) {
 		if r.URL.Path != "/search.json" {
 			t.Errorf("expected path /search.json, got %s", r.URL.Path)
 		}
-		if q := r.URL.Query().Get("q"); q != "Hobbit" {
-			t.Errorf("expected q=Hobbit, got %s", q)
+		q := r.URL.Query().Get("q")
+		title := r.URL.Query().Get("title")
+		if q != "Hobbit" && title != "Hobbit" {
+			t.Errorf("expected q=Hobbit or title=Hobbit, got q=%s title=%s", q, title)
 		}
 
 		responseJSON := `{

@@ -62,6 +62,14 @@ func (r *testWorkRepo) GetWorkByOpenLibraryID(ctx context.Context, olid string) 
 	}
 	return nil, domain.ErrWorkNotFound
 }
+func (r *testWorkRepo) GetWorkByGoogleBooksID(ctx context.Context, gbid string) (*domain.Work, error) {
+	for _, w := range r.works {
+		if w.GoogleBooksID == gbid {
+			return w, nil
+		}
+	}
+	return nil, domain.ErrWorkNotFound
+}
 func (r *testWorkRepo) SearchLocalWorks(ctx context.Context, query string, limit int) ([]domain.Work, error) {
 	return nil, nil
 }
@@ -80,6 +88,14 @@ func (r *testEditionRepo) SaveEdition(ctx context.Context, e *domain.Edition) er
 func (r *testEditionRepo) GetEditionByID(ctx context.Context, id string) (*domain.Edition, error) {
 	if e, ok := r.editions[id]; ok {
 		return e, nil
+	}
+	return nil, domain.ErrEditionNotFound
+}
+func (r *testEditionRepo) GetEditionByGoogleBooksID(ctx context.Context, gbid string) (*domain.Edition, error) {
+	for _, e := range r.editions {
+		if e.GoogleBooksID == gbid {
+			return e, nil
+		}
 	}
 	return nil, domain.ErrEditionNotFound
 }

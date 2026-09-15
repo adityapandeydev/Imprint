@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/adityapandeydev/imprint/backend/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -32,8 +33,8 @@ func (r *EditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) error
 			INSERT INTO editions (
 				work_id, title, publisher, publication_date, publication_year,
 				page_count, language, format, isbn10, isbn13, asin, cover_url,
-				description, open_library_edition_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+				description, open_library_edition_id, google_books_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, ''), NULLIF($15, ''))
 			ON CONFLICT (open_library_edition_id) DO UPDATE SET
 				title = EXCLUDED.title,
 				publisher = COALESCE(NULLIF(EXCLUDED.publisher, ''), editions.publisher),
@@ -43,34 +44,64 @@ func (r *EditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) error
 				isbn10 = COALESCE(EXCLUDED.isbn10, editions.isbn10),
 				isbn13 = COALESCE(EXCLUDED.isbn13, editions.isbn13),
 				asin = COALESCE(EXCLUDED.asin, editions.asin),
+				google_books_id = COALESCE(NULLIF(EXCLUDED.google_books_id, ''), editions.google_books_id),
 				updated_at = NOW()
 			RETURNING id, created_at, updated_at;
 		`
 		args = []any{
 			ed.WorkID, ed.Title, ed.Publisher, ed.PublicationDate, ed.PublicationYear,
 			ed.PageCount, ed.Language, string(ed.Format), ed.ISBN10, ed.ISBN13, ed.ASIN,
-			ed.CoverURL, ed.Description, ed.OpenLibraryEditionID,
+			ed.CoverURL, ed.Description, ed.OpenLibraryEditionID, ed.GoogleBooksID,
 		}
-	} else if ed.ID != "" {
+	} else if ed.GoogleBooksID != "" {
+		query = `
+			INSERT INTO editions (
+				work_id, title, publisher, publication_date, publication_year,
+				page_count, language, format, isbn10, isbn13, asin, cover_url,
+				description, open_library_edition_id, google_books_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, ''), NULLIF($15, ''))
+			ON CONFLICT (google_books_id) DO UPDATE SET
+				title = EXCLUDED.title,
+				publisher = COALESCE(NULLIF(EXCLUDED.publisher, ''), editions.publisher),
+				publication_date = COALESCE(NULLIF(EXCLUDED.publication_date, ''), editions.publication_date),
+				page_count = COALESCE(EXCLUDED.page_count, editions.page_count),
+				cover_url = COALESCE(NULLIF(EXCLUDED.cover_url, ''), editions.cover_url),
+				isbn10 = COALESCE(EXCLUDED.isbn10, editions.isbn10),
+				isbn13 = COALESCE(EXCLUDED.isbn13, editions.isbn13),
+				asin = COALESCE(EXCLUDED.asin, editions.asin),
+				open_library_edition_id = COALESCE(NULLIF(EXCLUDED.open_library_edition_id, ''), editions.open_library_edition_id),
+				updated_at = NOW()
+			RETURNING id, created_at, updated_at;
+		`
+		args = []any{
+			ed.WorkID, ed.Title, ed.Publisher, ed.PublicationDate, ed.PublicationYear,
+			ed.PageCount, ed.Language, string(ed.Format), ed.ISBN10, ed.ISBN13, ed.ASIN,
+			ed.CoverURL, ed.Description, ed.OpenLibraryEditionID, ed.GoogleBooksID,
+		}
+	} else if ed.ID != "" && domain.IsUUID(ed.ID) {
 		query = `
 			INSERT INTO editions (
 				id, work_id, title, publisher, publication_date, publication_year,
 				page_count, language, format, isbn10, isbn13, asin, cover_url,
-				description, open_library_edition_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+				description, open_library_edition_id, google_books_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 			ON CONFLICT (id) DO UPDATE SET
 				title = EXCLUDED.title,
 				publisher = COALESCE(NULLIF(EXCLUDED.publisher, ''), editions.publisher),
 				publication_date = COALESCE(NULLIF(EXCLUDED.publication_date, ''), editions.publication_date),
 				page_count = COALESCE(EXCLUDED.page_count, editions.page_count),
 				cover_url = COALESCE(NULLIF(EXCLUDED.cover_url, ''), editions.cover_url),
+				isbn10 = COALESCE(EXCLUDED.isbn10, editions.isbn10),
+				isbn13 = COALESCE(EXCLUDED.isbn13, editions.isbn13),
+				asin = COALESCE(EXCLUDED.asin, editions.asin),
+				google_books_id = COALESCE(NULLIF(EXCLUDED.google_books_id, ''), editions.google_books_id),
 				updated_at = NOW()
 			RETURNING id, created_at, updated_at;
 		`
 		args = []any{
 			ed.ID, ed.WorkID, ed.Title, ed.Publisher, ed.PublicationDate, ed.PublicationYear,
 			ed.PageCount, ed.Language, string(ed.Format), ed.ISBN10, ed.ISBN13, ed.ASIN,
-			ed.CoverURL, ed.Description, ed.OpenLibraryEditionID,
+			ed.CoverURL, ed.Description, ed.OpenLibraryEditionID, ed.GoogleBooksID,
 		}
 	} else {
 		query = `
@@ -91,13 +122,18 @@ func (r *EditionRepo) SaveEdition(ctx context.Context, ed *domain.Edition) error
 	return r.pool.QueryRow(ctx, query, args...).Scan(&ed.ID, &ed.CreatedAt, &ed.UpdatedAt)
 }
 
-// GetEditionByID fetches an Edition by UUID.
+// GetEditionByID fetches an Edition by UUID or provider ID.
 func (r *EditionRepo) GetEditionByID(ctx context.Context, id string) (*domain.Edition, error) {
+	trimmed := strings.TrimSpace(id)
+	if !domain.IsUUID(trimmed) {
+		return r.GetEditionByGoogleBooksID(ctx, trimmed)
+	}
+
 	query := `
 		SELECT id, work_id, title, COALESCE(publisher, ''), COALESCE(publication_date, ''),
 		       publication_year, page_count, COALESCE(language, 'eng'), format,
 		       isbn10, isbn13, asin, COALESCE(cover_url, ''), COALESCE(description, ''),
-		       COALESCE(open_library_edition_id, ''), created_at, updated_at
+		       COALESCE(open_library_edition_id, ''), COALESCE(google_books_id, ''), created_at, updated_at
 		FROM editions
 		WHERE id = $1;
 	`
@@ -105,17 +141,49 @@ func (r *EditionRepo) GetEditionByID(ctx context.Context, id string) (*domain.Ed
 		ed     domain.Edition
 		format string
 	)
-	err := r.pool.QueryRow(ctx, query, id).Scan(
+	err := r.pool.QueryRow(ctx, query, trimmed).Scan(
 		&ed.ID, &ed.WorkID, &ed.Title, &ed.Publisher, &ed.PublicationDate,
 		&ed.PublicationYear, &ed.PageCount, &ed.Language, &format,
 		&ed.ISBN10, &ed.ISBN13, &ed.ASIN, &ed.CoverURL, &ed.Description,
-		&ed.OpenLibraryEditionID, &ed.CreatedAt, &ed.UpdatedAt,
+		&ed.OpenLibraryEditionID, &ed.GoogleBooksID, &ed.CreatedAt, &ed.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrEditionNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("querying edition by id: %w", err)
+	}
+
+	ed.Format = domain.BookFormat(format)
+	return &ed, nil
+}
+
+// GetEditionByGoogleBooksID retrieves an Edition by its Google Books volume ID.
+func (r *EditionRepo) GetEditionByGoogleBooksID(ctx context.Context, gbid string) (*domain.Edition, error) {
+	query := `
+		SELECT id, work_id, title, COALESCE(publisher, ''), COALESCE(publication_date, ''),
+		       publication_year, page_count, COALESCE(language, 'eng'), format,
+		       isbn10, isbn13, asin, COALESCE(cover_url, ''), COALESCE(description, ''),
+		       COALESCE(open_library_edition_id, ''), COALESCE(google_books_id, ''), created_at, updated_at
+		FROM editions
+		WHERE google_books_id = $1
+		LIMIT 1;
+	`
+	var (
+		ed     domain.Edition
+		format string
+	)
+	err := r.pool.QueryRow(ctx, query, gbid).Scan(
+		&ed.ID, &ed.WorkID, &ed.Title, &ed.Publisher, &ed.PublicationDate,
+		&ed.PublicationYear, &ed.PageCount, &ed.Language, &format,
+		&ed.ISBN10, &ed.ISBN13, &ed.ASIN, &ed.CoverURL, &ed.Description,
+		&ed.OpenLibraryEditionID, &ed.GoogleBooksID, &ed.CreatedAt, &ed.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrEditionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying edition by google books id: %w", err)
 	}
 
 	ed.Format = domain.BookFormat(format)
@@ -129,7 +197,7 @@ func (r *EditionRepo) GetEditionByISBN(ctx context.Context, rawIdentifier string
 		SELECT id, work_id, title, COALESCE(publisher, ''), COALESCE(publication_date, ''),
 		       publication_year, page_count, COALESCE(language, 'eng'), format,
 		       isbn10, isbn13, asin, COALESCE(cover_url, ''), COALESCE(description, ''),
-		       COALESCE(open_library_edition_id, ''), created_at, updated_at
+		       COALESCE(open_library_edition_id, ''), COALESCE(google_books_id, ''), created_at, updated_at
 		FROM editions
 		WHERE isbn13 = $1 OR isbn10 = $1 OR asin = $1
 		LIMIT 1;
@@ -142,7 +210,7 @@ func (r *EditionRepo) GetEditionByISBN(ctx context.Context, rawIdentifier string
 		&ed.ID, &ed.WorkID, &ed.Title, &ed.Publisher, &ed.PublicationDate,
 		&ed.PublicationYear, &ed.PageCount, &ed.Language, &format,
 		&ed.ISBN10, &ed.ISBN13, &ed.ASIN, &ed.CoverURL, &ed.Description,
-		&ed.OpenLibraryEditionID, &ed.CreatedAt, &ed.UpdatedAt,
+		&ed.OpenLibraryEditionID, &ed.GoogleBooksID, &ed.CreatedAt, &ed.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrEditionNotFound
@@ -161,7 +229,7 @@ func (r *EditionRepo) GetEditionsByWorkID(ctx context.Context, workID string) ([
 		SELECT id, work_id, title, COALESCE(publisher, ''), COALESCE(publication_date, ''),
 		       publication_year, page_count, COALESCE(language, 'eng'), format,
 		       isbn10, isbn13, asin, COALESCE(cover_url, ''), COALESCE(description, ''),
-		       COALESCE(open_library_edition_id, ''), created_at, updated_at
+		       COALESCE(open_library_edition_id, ''), COALESCE(google_books_id, ''), created_at, updated_at
 		FROM editions
 		WHERE work_id = $1
 		ORDER BY publication_year DESC NULLS LAST, title ASC;
@@ -182,7 +250,7 @@ func (r *EditionRepo) GetEditionsByWorkID(ctx context.Context, workID string) ([
 			&ed.ID, &ed.WorkID, &ed.Title, &ed.Publisher, &ed.PublicationDate,
 			&ed.PublicationYear, &ed.PageCount, &ed.Language, &format,
 			&ed.ISBN10, &ed.ISBN13, &ed.ASIN, &ed.CoverURL, &ed.Description,
-			&ed.OpenLibraryEditionID, &ed.CreatedAt, &ed.UpdatedAt,
+			&ed.OpenLibraryEditionID, &ed.GoogleBooksID, &ed.CreatedAt, &ed.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning edition row: %w", err)
 		}
