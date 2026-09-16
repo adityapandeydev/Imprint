@@ -7,7 +7,7 @@
     "dev:backend": "cd backend && go run ./cmd/server/main.go",
     "dev:frontend": "cd frontend && bun run dev",
     "test:backend": "cd backend && go test -v ./...",
-    "test:frontend": "cd frontend && bun test",
+    "test:frontend": "cd frontend && bun run test",
     "lint:backend": "cd backend && go vet ./...",
     "migrate": "cd backend && go run ./cmd/migrate/main.go",
     "build:backend": "cd backend && go build -o bin/server ./cmd/server/main.go",

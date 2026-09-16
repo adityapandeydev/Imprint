@@ -525,7 +525,7 @@ function ImprintApp() {
 
       {/* Footer */}
       <footer className="border-t border-border-subtle py-6 text-center text-xs text-text-muted">
-        Imprint © 2026 — Crafted with React 19, Framer Motion, Tailwind CSS v4, and Go
+        Imprint © 2026
       </footer>
     </div>
   );
