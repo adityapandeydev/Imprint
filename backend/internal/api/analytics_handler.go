@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,3 +43,38 @@ func (h *AnalyticsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 
 	JSON(w, http.StatusOK, stats)
 }
+
+// SetGoal handles PUT /api/v1/users/goals
+func (h *AnalyticsHandler) SetGoal(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	if userID == "" {
+		Error(w, r, domain.ErrUnauthorized)
+		return
+	}
+
+	var req struct {
+		Year        int `json:"year"`
+		TargetBooks int `json:"target_books"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Error(w, r, domain.ErrInvalidInput)
+		return
+	}
+
+	if req.Year <= 0 {
+		req.Year = time.Now().Year()
+	}
+	if req.TargetBooks <= 0 {
+		Error(w, r, domain.ErrInvalidInput)
+		return
+	}
+
+	goal, err := h.analyticsSvc.SetReadingGoal(r.Context(), userID, req.Year, req.TargetBooks)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, goal)
+}
+

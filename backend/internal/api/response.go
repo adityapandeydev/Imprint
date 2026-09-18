@@ -53,6 +53,7 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, domain.ErrInvalidStatus),
 		errors.Is(err, domain.ErrInvalidPriority),
 		errors.Is(err, domain.ErrInvalidRating),
+		errors.Is(err, domain.ErrInvalidInput),
 		errors.Is(err, domain.ErrEmptyTitle):
 		status = http.StatusBadRequest
 		code = "INVALID_ARGUMENT"

@@ -309,6 +309,28 @@ func (r *testAnalyticsRepo) GetReadingStats(ctx context.Context, userID string, 
 	}, nil
 }
 
+func (r *testAnalyticsRepo) SetReadingGoal(ctx context.Context, userID string, year int, targetBooks int) (*domain.ReadingGoal, error) {
+	return &domain.ReadingGoal{
+		ID:          "g-1",
+		UserID:      userID,
+		Year:        year,
+		TargetBooks: targetBooks,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}, nil
+}
+
+func (r *testAnalyticsRepo) GetReadingGoal(ctx context.Context, userID string, year int) (*domain.ReadingGoal, error) {
+	return &domain.ReadingGoal{
+		ID:          "g-1",
+		UserID:      userID,
+		Year:        year,
+		TargetBooks: 24,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}, nil
+}
+
 func setupTestRouter() (http.Handler, *security.JWTService) {
 	workRepo := &testWorkRepo{works: map[string]*domain.Work{
 		"w-1": {ID: "w-1", Title: "The Hobbit", OpenLibraryWorkID: "OL27479W"},
@@ -591,3 +613,41 @@ func TestGetBookEndpoint_WithEditions(t *testing.T) {
 		t.Errorf("expected published editions to be resolved and returned, got 0")
 	}
 }
+
+func TestUserGoalsEndpoint(t *testing.T) {
+	router, jwtSvc := setupTestRouter()
+
+	user := &domain.User{
+		ID:       "u-reader",
+		Email:    "reader@imprint.app",
+		Username: "reader",
+	}
+	token, _, _ := jwtSvc.GenerateToken(user)
+
+	body := strings.NewReader(`{"year":2026,"target_books":30}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/goals", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on PUT /users/goals, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Data domain.ReadingGoal `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Data.Year != 2026 {
+		t.Errorf("expected year 2026, got %d", resp.Data.Year)
+	}
+	if resp.Data.TargetBooks != 30 {
+		t.Errorf("expected target_books 30, got %d", resp.Data.TargetBooks)
+	}
+}
+

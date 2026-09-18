@@ -122,7 +122,7 @@ func main() {
 			refreshTokens: make(map[string]*domain.RefreshToken),
 			resetTokens:   make(map[string]*domain.PasswordResetToken),
 		}
-		analyticsRepo = &memAnalyticsRepo{items: wishlistRepo}
+		analyticsRepo = &memAnalyticsRepo{items: wishlistRepo, goals: make(map[string]*domain.ReadingGoal)}
 	}
 
 	// 4. External Book Provider Setup (Open Library + Google Books Hybrid MultiProvider)
@@ -487,6 +487,35 @@ func (m *memTokenRepo) MarkPasswordResetUsed(ctx context.Context, id string) err
 
 type memAnalyticsRepo struct {
 	items domain.WishlistRepository
+	goals map[string]*domain.ReadingGoal
+}
+
+func (m *memAnalyticsRepo) SetReadingGoal(ctx context.Context, userID string, year int, targetBooks int) (*domain.ReadingGoal, error) {
+	if m.goals == nil {
+		m.goals = make(map[string]*domain.ReadingGoal)
+	}
+	key := fmt.Sprintf("%s:%d", userID, year)
+	goal := &domain.ReadingGoal{
+		ID:          key,
+		UserID:      userID,
+		Year:        year,
+		TargetBooks: targetBooks,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	m.goals[key] = goal
+	return goal, nil
+}
+
+func (m *memAnalyticsRepo) GetReadingGoal(ctx context.Context, userID string, year int) (*domain.ReadingGoal, error) {
+	if m.goals == nil {
+		return nil, domain.ErrNotFound
+	}
+	key := fmt.Sprintf("%s:%d", userID, year)
+	if g, ok := m.goals[key]; ok {
+		return g, nil
+	}
+	return nil, domain.ErrNotFound
 }
 
 func (m *memAnalyticsRepo) GetReadingStats(ctx context.Context, userID string, year int) (*domain.ReadingStats, error) {
@@ -507,6 +536,18 @@ func (m *memAnalyticsRepo) GetReadingStats(ctx context.Context, userID string, y
 			stats.BooksFinishedYear++
 			stats.TotalPagesRead += 320
 		}
+	}
+	target := 0
+	if g, err := m.GetReadingGoal(ctx, userID, year); err == nil && g != nil {
+		target = g.TargetBooks
+	}
+	stats.Challenge = &domain.ReadingChallenge{
+		Year:             year,
+		TargetBooks:      target,
+		BooksFinished:    stats.BooksFinishedYear,
+		MonthlyProgress:  make([]domain.MonthlyReadingProgress, 12),
+		PacingStatus:     "ON_TRACK",
+		PacingMessage:    "You are on track!",
 	}
 	return stats, nil
 }

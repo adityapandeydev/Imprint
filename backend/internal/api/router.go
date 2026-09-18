@@ -121,6 +121,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					users.Use(RequireAuth(cfg.JWTService))
 				}
 				users.Get("/stats", cfg.AnalyticsHandler.GetStats)
+				users.Put("/goals", cfg.AnalyticsHandler.SetGoal)
 			})
 		}
 

@@ -17,6 +17,7 @@ var (
 	ErrInvalidStatus   = errors.New("invalid reading status")
 	ErrInvalidPriority = errors.New("priority must be between 1 (lowest) and 5 (highest)")
 	ErrInvalidRating   = errors.New("rating must be between 1 and 5")
+	ErrInvalidInput    = errors.New("invalid request input")
 	ErrEmptyTitle            = errors.New("title cannot be empty")
 	ErrInvalidCredentials    = errors.New("invalid email or password")
 	ErrEmailAlreadyExists    = errors.New("an account with this email already exists")

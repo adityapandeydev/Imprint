@@ -5,6 +5,7 @@ import type {
   Edition,
   GoodreadsImportSummary,
   LoginRequest,
+  ReadingGoal,
   ReadingStats,
   ReadingStatus,
   RegisterRequest,
@@ -352,5 +353,15 @@ export const api = {
     const query = year ? `?year=${year}` : '';
     const res = await fetchWithAuth(`${API_BASE}/users/stats${query}`);
     return handleResponse<ReadingStats>(res);
+  },
+
+  // Set annual reading challenge target
+  async setReadingGoal(year: number, targetBooks: number): Promise<ReadingGoal> {
+    const res = await fetchWithAuth(`${API_BASE}/users/goals`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, target_books: targetBooks }),
+    });
+    return handleResponse<ReadingGoal>(res);
   },
 };

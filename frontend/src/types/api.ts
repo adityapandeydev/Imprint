@@ -109,6 +109,35 @@ export interface AuthorCount {
   count: number;
 }
 
+export interface MonthlyReadingProgress {
+  month: number; // 1 = Jan .. 12 = Dec
+  books: number;
+  pages: number;
+}
+
+export interface ReadingGoal {
+  id: string;
+  user_id: string;
+  year: number;
+  target_books: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReadingChallenge {
+  year: number;
+  target_books: number;
+  books_finished: number;
+  percentage: number;
+  days_elapsed: number;
+  total_days: number;
+  expected_finished: number;
+  pacing_diff: number;
+  pacing_status: 'AHEAD' | 'ON_TRACK' | 'BEHIND' | 'COMPLETED' | 'NOT_SET';
+  pacing_message: string;
+  monthly_progress: MonthlyReadingProgress[];
+}
+
 export interface ReadingStats {
   total_books: number;
   books_finished_year: number;
@@ -120,6 +149,7 @@ export interface ReadingStats {
   top_authors: AuthorCount[];
   format_distribution: Record<string, number>;
   current_year: number;
+  challenge?: ReadingChallenge;
 }
 
 export interface GoodreadsImportSummary {
