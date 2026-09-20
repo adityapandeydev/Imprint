@@ -169,6 +169,11 @@ func (r *WishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID stri
 
 // ListByUser retrieves all wishlist items for a user, optionally filtered by reading status.
 func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilter *domain.ReadingStatus) ([]domain.WishlistItem, error) {
+	return r.ListByUserAndTag(ctx, userID, statusFilter, nil)
+}
+
+// ListByUserAndTag retrieves all wishlist items for a user, optionally filtered by reading status and/or custom shelf tag.
+func (r *WishlistRepo) ListByUserAndTag(ctx context.Context, userID string, statusFilter *domain.ReadingStatus, tagFilter *string) ([]domain.WishlistItem, error) {
 	query := `
 		SELECT wi.id, wi.user_id, wi.work_id, wi.edition_id, wi.status, wi.priority,
 		       wi.rating, COALESCE(wi.notes, ''), COALESCE(wi.tags, '{}'), wi.started_at, wi.finished_at,
@@ -186,6 +191,7 @@ func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilt
 		LEFT JOIN editions e ON wi.edition_id = e.id
 		WHERE wi.user_id = $1
 		  AND ($2::text IS NULL OR wi.status = $2)
+		  AND ($3::text IS NULL OR $3 = ANY(wi.tags))
 		ORDER BY wi.priority DESC, wi.updated_at DESC;
 	`
 	var filterArg *string
@@ -194,7 +200,7 @@ func (r *WishlistRepo) ListByUser(ctx context.Context, userID string, statusFilt
 		filterArg = &s
 	}
 
-	rows, err := r.pool.Query(ctx, query, userID, filterArg)
+	rows, err := r.pool.Query(ctx, query, userID, filterArg, tagFilter)
 	if err != nil {
 		return nil, fmt.Errorf("querying wishlist items for user: %w", err)
 	}

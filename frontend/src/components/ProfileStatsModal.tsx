@@ -15,9 +15,37 @@ import {
   Check,
   Edit3,
   Calendar,
+  Globe,
+  Lock,
+  Eye,
+  Share2,
+  ExternalLink,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { ReadingChallenge, ReadingStats } from '../types/api';
+import { useAuth } from '../context/AuthContext';
+import { ShareModal } from './ShareModal';
+import { toast } from '../lib/toast';
+import type { ProfileVisibility, ReadingChallenge, ReadingStats } from '../types/api';
+
+const useSafeAuth = () => {
+  try {
+    return useAuth();
+  } catch {
+    return {
+      user: null,
+      isAuthenticated: false,
+      isLoading: false,
+      login: async () => {},
+      register: async () => {},
+      logout: async () => {},
+      updateUserProfileVisibility: async () => {},
+      isAuthModalOpen: false,
+      authModalMode: 'login' as const,
+      openAuthModal: () => {},
+      closeAuthModal: () => {},
+    };
+  }
+};
 
 interface ProfileStatsModalProps {
   isOpen: boolean;
@@ -47,6 +75,33 @@ export const ProfileStatsModal: React.FC<ProfileStatsModalProps> = ({
   const [isSavingGoal, setIsSavingGoal] = useState(false);
   const [goalSaveError, setGoalSaveError] = useState<string | null>(null);
   const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
+
+  // Privacy & Sharing State
+  const auth = useSafeAuth();
+  const user = auth.user;
+  const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  const currentVisibility = user?.profile_visibility || 'PUBLIC';
+
+  const handlePrivacyChange = async (visibility: ProfileVisibility) => {
+    if (visibility === currentVisibility) return;
+    try {
+      setIsUpdatingPrivacy(true);
+      await auth.updateUserProfileVisibility(visibility);
+      toast.success(`Library visibility set to ${visibility}`);
+    } catch {
+      toast.error('Failed to update privacy settings');
+    } finally {
+      setIsUpdatingPrivacy(false);
+    }
+  };
+
+  const handleViewPublicProfile = () => {
+    if (!user?.username) return;
+    onClose();
+    window.location.hash = `#/u/${encodeURIComponent(user.username)}`;
+  };
 
   const fetchStats = async () => {
     try {
@@ -657,8 +712,130 @@ export const ProfileStatsModal: React.FC<ProfileStatsModalProps> = ({
                   })}
                 </div>
               </div>
+
+              {/* Privacy & Public Sharing Controls */}
+              {user && (
+                <div className="bg-surface-hover/40 border border-border-subtle rounded-2xl p-5 sm:p-6 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Globe className="w-4 h-4 text-accent" />
+                      <h3 className="text-sm font-semibold text-text-main">
+                        Library Visibility & Social Sharing
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {currentVisibility !== 'PRIVATE' && (
+                        <>
+                          <button
+                            onClick={() => setIsShareModalOpen(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-accent-soft border border-accent/20 text-accent text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity cursor-pointer"
+                          >
+                            <Share2 className="w-3.5 h-3.5" />
+                            <span>Share Library</span>
+                          </button>
+                          <button
+                            onClick={handleViewPublicProfile}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface border border-border-subtle hover:bg-surface-hover text-text-main text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 text-accent" />
+                            <span>View Public Profile</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Visibility Choice Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* PUBLIC */}
+                    <button
+                      type="button"
+                      disabled={isUpdatingPrivacy}
+                      onClick={() => handlePrivacyChange('PUBLIC')}
+                      className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        currentVisibility === 'PUBLIC'
+                          ? 'bg-surface border-accent shadow-sm ring-1 ring-accent/30'
+                          : 'bg-surface/60 border-border-subtle hover:border-accent/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Public</span>
+                        </span>
+                        {currentVisibility === 'PUBLIC' && (
+                          <Check className="w-3.5 h-3.5 text-accent" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-text-muted leading-relaxed">
+                        Anyone can discover and view your collection, challenge progress, and shelves.
+                      </p>
+                    </button>
+
+                    {/* UNLISTED */}
+                    <button
+                      type="button"
+                      disabled={isUpdatingPrivacy}
+                      onClick={() => handlePrivacyChange('UNLISTED')}
+                      className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        currentVisibility === 'UNLISTED'
+                          ? 'bg-surface border-accent shadow-sm ring-1 ring-accent/30'
+                          : 'bg-surface/60 border-border-subtle hover:border-accent/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
+                          <Eye className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Unlisted</span>
+                        </span>
+                        {currentVisibility === 'UNLISTED' && (
+                          <Check className="w-3.5 h-3.5 text-accent" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-text-muted leading-relaxed">
+                        Only people with your direct link can view your shelves. Hidden from public discovery.
+                      </p>
+                    </button>
+
+                    {/* PRIVATE */}
+                    <button
+                      type="button"
+                      disabled={isUpdatingPrivacy}
+                      onClick={() => handlePrivacyChange('PRIVATE')}
+                      className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        currentVisibility === 'PRIVATE'
+                          ? 'bg-surface border-accent shadow-sm ring-1 ring-accent/30'
+                          : 'bg-surface/60 border-border-subtle hover:border-accent/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-rose-500" />
+                          <span>Private</span>
+                        </span>
+                        {currentVisibility === 'PRIVATE' && (
+                          <Check className="w-3.5 h-3.5 text-accent" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-text-muted leading-relaxed">
+                        Only you can view your collection and stats. Your public profile link is disabled.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : null}
+
+          {/* Share Modal */}
+          {user && (
+            <ShareModal
+              isOpen={isShareModalOpen}
+              onClose={() => setIsShareModalOpen(false)}
+              username={user.username}
+              displayName={user.display_name}
+            />
+          )}
         </motion.div>
       </div>
     </AnimatePresence>

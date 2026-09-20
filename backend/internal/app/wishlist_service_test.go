@@ -44,11 +44,27 @@ func (r *mockWishlistRepo) GetByUserAndWork(ctx context.Context, userID, workID 
 }
 
 func (r *mockWishlistRepo) ListByUser(ctx context.Context, userID string, status *domain.ReadingStatus) ([]domain.WishlistItem, error) {
+	return r.ListByUserAndTag(ctx, userID, status, nil)
+}
+
+func (r *mockWishlistRepo) ListByUserAndTag(ctx context.Context, userID string, status *domain.ReadingStatus, tag *string) ([]domain.WishlistItem, error) {
 	var list []domain.WishlistItem
 	for _, item := range r.items {
 		if item.UserID == userID {
 			if status != nil && item.Status != *status {
 				continue
+			}
+			if tag != nil && *tag != "" {
+				matched := false
+				for _, t := range item.Tags {
+					if strings.EqualFold(t, *tag) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
 			}
 			list = append(list, *item)
 		}

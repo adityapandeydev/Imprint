@@ -18,6 +18,7 @@ type RouterConfig struct {
 	WishlistHandler  *WishlistHandler
 	AuthHandler      *AuthHandler
 	AnalyticsHandler *AnalyticsHandler
+	ProfileHandler   *ProfileHandler
 	JWTService       *security.JWTService
 	RateLimiter      *security.RateLimiter
 	Logger           *slog.Logger
@@ -76,6 +77,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 	})
 
+	// Social crawler / OpenGraph preview routes
+	if cfg.ProfileHandler != nil {
+		r.Get("/u/{username}", cfg.ProfileHandler.RenderSocialShareHTML)
+		r.Get("/u/{username}/shelf/{shelf}", cfg.ProfileHandler.RenderSocialShareHTML)
+	}
+
 	// Helper for rate limiter conditional application
 	rateLimit := func(limit int, window time.Duration, bucket string) func(http.Handler) http.Handler {
 		if cfg.RateLimiter != nil {
@@ -114,18 +121,32 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			editions.Get("/isbn/{isbn}", cfg.CatalogHandler.GetEditionByISBN)
 		})
 
-		// 4. User Reading Analytics Routes (Protected)
-		if cfg.AnalyticsHandler != nil {
+		// 4. Public Reader Profiles & Social Previews
+		if cfg.ProfileHandler != nil {
+			v1.Route("/public", func(pub chi.Router) {
+				pub.Get("/users/{username}", cfg.ProfileHandler.GetPublicProfile)
+				pub.Get("/users/{username}/collection", cfg.ProfileHandler.GetPublicCollection)
+				pub.Get("/users/{username}/og.svg", cfg.ProfileHandler.GetOpenGraphSVG)
+			})
+		}
+
+		// 5. User Reading Analytics & Privacy Settings (Protected)
+		if cfg.AnalyticsHandler != nil || cfg.ProfileHandler != nil {
 			v1.Route("/users", func(users chi.Router) {
 				if cfg.JWTService != nil {
 					users.Use(RequireAuth(cfg.JWTService))
 				}
-				users.Get("/stats", cfg.AnalyticsHandler.GetStats)
-				users.Put("/goals", cfg.AnalyticsHandler.SetGoal)
+				if cfg.AnalyticsHandler != nil {
+					users.Get("/stats", cfg.AnalyticsHandler.GetStats)
+					users.Put("/goals", cfg.AnalyticsHandler.SetGoal)
+				}
+				if cfg.ProfileHandler != nil {
+					users.Put("/privacy", cfg.ProfileHandler.UpdatePrivacy)
+				}
 			})
 		}
 
-		// 5. Wishlist / Collection Routes (Protected)
+		// 6. Wishlist / Collection Routes (Protected)
 		v1.Route("/wishlist", func(wl chi.Router) {
 			if cfg.JWTService != nil {
 				wl.Use(RequireAuth(cfg.JWTService))

@@ -79,6 +79,14 @@ func (m *mockUserRepo) UpdatePassword(ctx context.Context, userID, passwordHash 
 	return domain.ErrUserNotFound
 }
 
+func (m *mockUserRepo) UpdateProfileVisibility(ctx context.Context, userID string, visibility domain.ProfileVisibility) error {
+	if u, ok := m.usersByID[userID]; ok {
+		u.ProfileVisibility = visibility
+		return nil
+	}
+	return domain.ErrUserNotFound
+}
+
 type mockTokenRepo struct {
 	mu            sync.Mutex
 	refreshTokens map[string]*domain.RefreshToken

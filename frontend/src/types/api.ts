@@ -171,13 +171,31 @@ export interface ApiError {
   };
 }
 
+export type ProfileVisibility = 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
+
 export interface User {
   id: string;
   email: string;
   username: string;
   display_name: string;
+  profile_visibility?: ProfileVisibility;
   created_at: string;
   updated_at: string;
+}
+
+export interface PublicProfile {
+  username: string;
+  display_name: string;
+  profile_visibility: ProfileVisibility;
+  member_since: string;
+  stats?: ReadingStats;
+  shelves: TagCount[];
+}
+
+export interface PublicCollectionResponse {
+  profile: PublicProfile;
+  items: WishlistItem[];
+  count: number;
 }
 
 export interface AuthTokens {

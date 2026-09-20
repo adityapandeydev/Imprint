@@ -148,12 +148,15 @@ func main() {
 	catalogHandler := api.NewCatalogHandler(catalogSvc)
 	wishlistHandler := api.NewWishlistHandler(wishlistSvc)
 	analyticsHandler := api.NewAnalyticsHandler(analyticsSvc)
+	profileSvc := app.NewProfileService(userRepo, wishlistRepo, analyticsRepo)
+	profileHandler := api.NewProfileHandler(profileSvc)
 
 	router := api.NewRouter(api.RouterConfig{
 		CatalogHandler:   catalogHandler,
 		WishlistHandler:  wishlistHandler,
 		AuthHandler:      authHandler,
 		AnalyticsHandler: analyticsHandler,
+		ProfileHandler:   profileHandler,
 		JWTService:       jwtSvc,
 		RateLimiter:      rateLimiter,
 		Logger:           logger,
@@ -288,12 +291,28 @@ func (m *memWishlistRepo) GetByUserAndWork(ctx context.Context, uID, wID string)
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (m *memWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain.ReadingStatus) ([]domain.WishlistItem, error) {
+	return m.ListByUserAndTag(ctx, uID, s, nil)
+}
+func (m *memWishlistRepo) ListByUserAndTag(ctx context.Context, uID string, s *domain.ReadingStatus, tag *string) ([]domain.WishlistItem, error) {
 	res := make([]domain.WishlistItem, 0)
 	for _, it := range m.items {
 		if it.UserID == uID {
-			if s == nil || it.Status == *s {
-				res = append(res, *it)
+			if s != nil && it.Status != *s {
+				continue
 			}
+			if tag != nil && *tag != "" {
+				hasTag := false
+				for _, t := range it.Tags {
+					if strings.EqualFold(t, *tag) {
+						hasTag = true
+						break
+					}
+				}
+				if !hasTag {
+					continue
+				}
+			}
+			res = append(res, *it)
 		}
 	}
 	return res, nil
@@ -394,6 +413,15 @@ func (m *memUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, erro
 func (m *memUserRepo) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
 	if u, ok := m.users[userID]; ok {
 		u.PasswordHash = passwordHash
+		u.UpdatedAt = time.Now()
+		return nil
+	}
+	return domain.ErrUserNotFound
+}
+
+func (m *memUserRepo) UpdateProfileVisibility(ctx context.Context, userID string, visibility domain.ProfileVisibility) error {
+	if u, ok := m.users[userID]; ok {
+		u.ProfileVisibility = visibility
 		u.UpdatedAt = time.Now()
 		return nil
 	}

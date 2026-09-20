@@ -67,7 +67,8 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusUnauthorized
 		code = "UNAUTHORIZED"
 
-	case errors.Is(err, domain.ErrForbidden):
+	case errors.Is(err, domain.ErrForbidden),
+		errors.Is(err, domain.ErrProfilePrivate):
 		status = http.StatusForbidden
 		code = "FORBIDDEN"
 

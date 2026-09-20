@@ -14,6 +14,7 @@ import { EditionModal } from './components/EditionModal';
 import { CollectionView } from './components/CollectionView';
 import { AuthModal } from './components/AuthModal';
 import { ToastContainer } from './components/Toast';
+import { PublicProfileView } from './components/PublicProfileView';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { api } from './lib/api';
 import { toast } from './lib/toast';
@@ -29,6 +30,45 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+interface PublicRoute {
+  username: string;
+  shelf?: string;
+}
+
+function parsePublicRoute(): PublicRoute | null {
+  if (typeof window === 'undefined') return null;
+
+  const pathname = window.location.pathname;
+  if (pathname.startsWith('/u/')) {
+    const parts = pathname.slice(3).split('/');
+    const username = decodeURIComponent(parts[0] || '');
+    if (username) {
+      const shelfIdx = parts.indexOf('shelf');
+      const shelf =
+        shelfIdx !== -1 && parts[shelfIdx + 1]
+          ? decodeURIComponent(parts[shelfIdx + 1])
+          : undefined;
+      return { username, shelf };
+    }
+  }
+
+  const hash = window.location.hash;
+  if (hash.startsWith('#/u/')) {
+    const parts = hash.slice(4).split('/');
+    const username = decodeURIComponent(parts[0] || '');
+    if (username) {
+      const shelfIdx = parts.indexOf('shelf');
+      const shelf =
+        shelfIdx !== -1 && parts[shelfIdx + 1]
+          ? decodeURIComponent(parts[shelfIdx + 1])
+          : undefined;
+      return { username, shelf };
+    }
+  }
+
+  return null;
+}
 
 function getInitialTab(): 'discover' | 'collection' {
   if (typeof window === 'undefined') return 'discover';
@@ -47,6 +87,7 @@ function getInitialTab(): 'discover' | 'collection' {
 function ImprintApp() {
   const { user, isAuthenticated, openAuthModal } = useAuth();
   const [activeTab, setActiveTab] = useState<'discover' | 'collection'>(getInitialTab);
+  const [publicRoute, setPublicRoute] = useState<PublicRoute | null>(parsePublicRoute);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWork, setSelectedWork] = useState<Work | null>(null);
   const [activeWishlistItem, setActiveWishlistItem] = useState<WishlistItem | null>(null);
@@ -56,6 +97,7 @@ function ImprintApp() {
 
   const switchTab = useCallback((tab: 'discover' | 'collection') => {
     setActiveTab(tab);
+    setPublicRoute(null);
     try {
       localStorage.setItem('imprint_active_tab', tab);
     } catch {
@@ -70,28 +112,37 @@ function ImprintApp() {
   // Listen for browser Back/Forward and manual URL hash modifications
   useEffect(() => {
     const handleLocationChange = () => {
-      const hash = window.location.hash.toLowerCase();
-      if (hash === '#collection') {
-        setActiveTab('collection');
-        try {
-          localStorage.setItem('imprint_active_tab', 'collection');
-        } catch {}
-      } else if (hash === '#discover' || hash === '' || hash === '#') {
-        setActiveTab('discover');
-        try {
-          localStorage.setItem('imprint_active_tab', 'discover');
-        } catch {}
+      const pub = parsePublicRoute();
+      setPublicRoute(pub);
+
+      if (!pub) {
+        const hash = window.location.hash.toLowerCase();
+        if (hash === '#collection') {
+          setActiveTab('collection');
+          try {
+            localStorage.setItem('imprint_active_tab', 'collection');
+          } catch {}
+        } else if (hash === '#discover' || hash === '' || hash === '#') {
+          setActiveTab('discover');
+          try {
+            localStorage.setItem('imprint_active_tab', 'discover');
+          } catch {}
+        }
       }
     };
 
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('popstate', handleLocationChange);
 
-    // Keep URL in sync with restored active tab if no hash was set
-    const currentHash = window.location.hash.toLowerCase();
-    if (!currentHash) {
-      const initialHash = activeTab === 'collection' ? '#collection' : '#discover';
-      window.history.replaceState(null, '', initialHash);
+    // Initial check
+    const pub = parsePublicRoute();
+    setPublicRoute(pub);
+    if (!pub) {
+      const currentHash = window.location.hash.toLowerCase();
+      if (!currentHash) {
+        const initialHash = activeTab === 'collection' ? '#collection' : '#discover';
+        window.history.replaceState(null, '', initialHash);
+      }
     }
 
     return () => {
@@ -352,6 +403,56 @@ function ImprintApp() {
       `${edition.format || 'Edition'} (${edition.publisher || 'Catalog'})`
     );
   };
+
+  if (publicRoute) {
+    return (
+      <div className="min-h-screen bg-bg text-text-main transition-colors duration-300">
+        <PublicProfileView
+          username={publicRoute.username}
+          initialShelf={publicRoute.shelf}
+          onNavigateHome={() => {
+            setPublicRoute(null);
+            window.location.hash = '#discover';
+            setActiveTab('discover');
+          }}
+          onInspectWork={(work) => {
+            setSelectedWork(work);
+            setIsEditionModalOpen(true);
+          }}
+        />
+
+        {/* Edition Inspection Modal for Public Viewer */}
+        <EditionModal
+          work={selectedWork}
+          isOpen={isEditionModalOpen}
+          onClose={() => {
+            setIsEditionModalOpen(false);
+            setActiveWishlistItem(null);
+          }}
+          wishlistItem={null}
+          onSelectWishlistEdition={() => {}}
+          onAddEditionToWishlist={(work, edition) => {
+            if (!isAuthenticated) {
+              toast.info('Sign in required', 'Please sign in to save books to your collection');
+              openAuthModal('login');
+              return;
+            }
+            addMutation.mutate({ work, edition });
+          }}
+          isWorkInCollection={
+            Boolean(selectedWork?.id && collectionWorkIds.has(selectedWork.id)) ||
+            Boolean(
+              selectedWork?.open_library_work_id &&
+                collectionWorkIds.has(selectedWork.open_library_work_id)
+            )
+          }
+        />
+
+        <AuthModal />
+        <ToastContainer />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-canvas text-text-main transition-colors duration-200">

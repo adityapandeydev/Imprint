@@ -28,6 +28,7 @@ describe('AuthModal component', () => {
       login: mockLogin,
       register: mockRegister,
       logout: vi.fn(),
+      updateUserProfileVisibility: vi.fn(),
     });
 
     return render(<AuthModal />);

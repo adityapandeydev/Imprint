@@ -24,6 +24,7 @@ var (
 	ErrUsernameAlreadyExists = errors.New("this username is already taken")
 	ErrUnauthorized          = errors.New("authentication required")
 	ErrForbidden             = errors.New("forbidden")
+	ErrProfilePrivate        = errors.New("this reader profile is private")
 	ErrInvalidToken          = errors.New("invalid or expired authentication token")
 
 	ErrProviderTimeout     = errors.New("book metadata provider timed out")

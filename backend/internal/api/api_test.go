@@ -143,9 +143,27 @@ func (r *testWishlistRepo) GetByUserAndWork(ctx context.Context, uID, wID string
 	return nil, domain.ErrWishlistItemNotFound
 }
 func (r *testWishlistRepo) ListByUser(ctx context.Context, uID string, s *domain.ReadingStatus) ([]domain.WishlistItem, error) {
+	return r.ListByUserAndTag(ctx, uID, s, nil)
+}
+func (r *testWishlistRepo) ListByUserAndTag(ctx context.Context, uID string, s *domain.ReadingStatus, tag *string) ([]domain.WishlistItem, error) {
 	var res []domain.WishlistItem
 	for _, it := range r.items {
 		if it.UserID == uID {
+			if s != nil && it.Status != *s {
+				continue
+			}
+			if tag != nil && *tag != "" {
+				matched := false
+				for _, t := range it.Tags {
+					if strings.EqualFold(t, *tag) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
 			res = append(res, *it)
 		}
 	}
@@ -189,13 +207,14 @@ func (r *testUserRepo) CreateUser(ctx context.Context, email, username, displayN
 		}
 	}
 	u := &domain.User{
-		ID:           "u-" + username,
-		Email:        email,
-		Username:     username,
-		DisplayName:  displayName,
-		PasswordHash: passwordHash,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		ID:                "u-" + username,
+		Email:             email,
+		Username:          username,
+		DisplayName:       displayName,
+		PasswordHash:      passwordHash,
+		ProfileVisibility: domain.VisibilityPublic,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
 	}
 	r.users[u.ID] = u
 	return u, nil
@@ -223,11 +242,18 @@ func (r *testUserRepo) GetByUsername(ctx context.Context, username string) (*dom
 	return nil, domain.ErrUserNotFound
 }
 func (r *testUserRepo) EnsureDefaultUser(ctx context.Context) (*domain.User, error) {
-	return &domain.User{ID: "00000000-0000-0000-0000-000000000001", Email: "reader@imprint.app", Username: "reader"}, nil
+	return &domain.User{ID: "00000000-0000-0000-0000-000000000001", Email: "reader@imprint.app", Username: "reader", ProfileVisibility: domain.VisibilityPublic}, nil
 }
 func (r *testUserRepo) UpdatePassword(ctx context.Context, userID, passwordHash string) error {
 	if u, ok := r.users[userID]; ok {
 		u.PasswordHash = passwordHash
+		return nil
+	}
+	return domain.ErrUserNotFound
+}
+func (r *testUserRepo) UpdateProfileVisibility(ctx context.Context, userID string, visibility domain.ProfileVisibility) error {
+	if u, ok := r.users[userID]; ok {
+		u.ProfileVisibility = visibility
 		return nil
 	}
 	return domain.ErrUserNotFound
@@ -356,12 +382,15 @@ func setupTestRouter() (http.Handler, *security.JWTService) {
 	catalogHandler := NewCatalogHandler(catalogSvc)
 	wishlistHandler := NewWishlistHandler(wishlistSvc)
 	analyticsHandler := NewAnalyticsHandler(analyticsSvc)
+	profileSvc := app.NewProfileService(userRepo, wishlistRepo, analyticsRepo)
+	profileHandler := NewProfileHandler(profileSvc)
 
 	router := NewRouter(RouterConfig{
 		CatalogHandler:   catalogHandler,
 		WishlistHandler:  wishlistHandler,
 		AuthHandler:      authHandler,
 		AnalyticsHandler: analyticsHandler,
+		ProfileHandler:   profileHandler,
 		JWTService:       jwtSvc,
 		RateLimiter:      rateLimiter,
 	})
@@ -648,6 +677,117 @@ func TestUserGoalsEndpoint(t *testing.T) {
 	}
 	if resp.Data.TargetBooks != 30 {
 		t.Errorf("expected target_books 30, got %d", resp.Data.TargetBooks)
+	}
+}
+
+func TestPublicProfileEndpoints(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	// 1. Register a reader account
+	registerBody := strings.NewReader(`{"email":"aditya@imprint.app","username":"aditya","password":"Password123!","display_name":"Aditya"}`)
+	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", registerBody)
+	regReq.Header.Set("Content-Type", "application/json")
+	regRec := httptest.NewRecorder()
+	router.ServeHTTP(regRec, regReq)
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on register, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+
+	var authResp struct {
+		Data struct {
+			AccessToken string      `json:"access_token"`
+			User        domain.User `json:"user"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(regRec.Body).Decode(&authResp)
+	token := authResp.Data.AccessToken
+
+	// 2. Fetch public profile of aditya (default: PUBLIC)
+	pubReq := httptest.NewRequest(http.MethodGet, "/api/v1/public/users/aditya", nil)
+	pubRec := httptest.NewRecorder()
+	router.ServeHTTP(pubRec, pubReq)
+	if pubRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /public/users/aditya, got %d: %s", pubRec.Code, pubRec.Body.String())
+	}
+
+	var pubResp struct {
+		Data domain.PublicProfile `json:"data"`
+	}
+	_ = json.NewDecoder(pubRec.Body).Decode(&pubResp)
+	if pubResp.Data.Username != "aditya" {
+		t.Errorf("expected username aditya, got %s", pubResp.Data.Username)
+	}
+	if pubResp.Data.ProfileVisibility != domain.VisibilityPublic {
+		t.Errorf("expected visibility PUBLIC, got %s", pubResp.Data.ProfileVisibility)
+	}
+
+	// 3. Add a book to collection with shelf tag
+	addBody := strings.NewReader(`{"work_id":"w-1","status":"FINISHED","tags":["favorites","sci-fi"]}`)
+	addReq := httptest.NewRequest(http.MethodPost, "/api/v1/wishlist", addBody)
+	addReq.Header.Set("Authorization", "Bearer "+token)
+	addReq.Header.Set("Content-Type", "application/json")
+	addRec := httptest.NewRecorder()
+	router.ServeHTTP(addRec, addReq)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on adding book, got %d: %s", addRec.Code, addRec.Body.String())
+	}
+
+	// 4. Fetch public collection
+	collReq := httptest.NewRequest(http.MethodGet, "/api/v1/public/users/aditya/collection", nil)
+	collRec := httptest.NewRecorder()
+	router.ServeHTTP(collRec, collReq)
+	if collRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /public/users/aditya/collection, got %d", collRec.Code)
+	}
+
+	// 5. Fetch public collection filtered by tag
+	tagReq := httptest.NewRequest(http.MethodGet, "/api/v1/public/users/aditya/collection?tag=favorites", nil)
+	tagRec := httptest.NewRecorder()
+	router.ServeHTTP(tagRec, tagReq)
+	if tagRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on tag filtered collection, got %d", tagRec.Code)
+	}
+
+	// 6. Test OpenGraph SVG generation
+	ogReq := httptest.NewRequest(http.MethodGet, "/api/v1/public/users/aditya/og.svg", nil)
+	ogRec := httptest.NewRecorder()
+	router.ServeHTTP(ogRec, ogReq)
+	if ogRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /og.svg, got %d", ogRec.Code)
+	}
+	if !strings.Contains(ogRec.Header().Get("Content-Type"), "image/svg+xml") {
+		t.Errorf("expected Content-Type image/svg+xml, got %s", ogRec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(ogRec.Body.String(), "<svg") {
+		t.Errorf("expected SVG body, got %s", ogRec.Body.String())
+	}
+
+	// 7. Update privacy to PRIVATE
+	privBody := strings.NewReader(`{"profile_visibility":"PRIVATE"}`)
+	privReq := httptest.NewRequest(http.MethodPut, "/api/v1/users/privacy", privBody)
+	privReq.Header.Set("Authorization", "Bearer "+token)
+	privReq.Header.Set("Content-Type", "application/json")
+	privRec := httptest.NewRecorder()
+	router.ServeHTTP(privRec, privReq)
+	if privRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on PUT /users/privacy, got %d: %s", privRec.Code, privRec.Body.String())
+	}
+
+	// 8. Verify public profile is now forbidden
+	blockedReq := httptest.NewRequest(http.MethodGet, "/api/v1/public/users/aditya", nil)
+	blockedRec := httptest.NewRecorder()
+	router.ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for private profile, got %d", blockedRec.Code)
+	}
+
+	// 9. Test crawler social share route
+	crawlerReq := httptest.NewRequest(http.MethodGet, "/u/aditya", nil)
+	crawlerRec := httptest.NewRecorder()
+	router.ServeHTTP(crawlerRec, crawlerReq)
+	// Because it's private, crawler gets 404 private barrier
+	if crawlerRec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for private crawler route, got %d", crawlerRec.Code)
 	}
 }
 

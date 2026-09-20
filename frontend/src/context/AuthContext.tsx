@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api, tokenStorage } from '../lib/api';
-import type { User, LoginRequest, RegisterRequest } from '../types/api';
+import type { User, LoginRequest, RegisterRequest, ProfileVisibility } from '../types/api';
 
 interface AuthContextType {
   user: User | null;
@@ -9,6 +9,7 @@ interface AuthContextType {
   login: (req: LoginRequest) => Promise<void>;
   register: (req: RegisterRequest) => Promise<void>;
   logout: () => Promise<void>;
+  updateUserProfileVisibility: (visibility: ProfileVisibility) => Promise<void>;
   isAuthModalOpen: boolean;
   authModalMode: 'login' | 'register';
   openAuthModal: (mode?: 'login' | 'register') => void;
@@ -70,6 +71,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const updateUserProfileVisibility = useCallback(async (visibility: ProfileVisibility) => {
+    const res = await api.updateProfileVisibility(visibility);
+    setUser((prev) => (prev ? { ...prev, profile_visibility: res.profile_visibility as ProfileVisibility } : null));
+  }, []);
+
   const openAuthModal = useCallback((mode: 'login' | 'register' = 'login') => {
     setAuthModalMode(mode);
     setIsAuthModalOpen(true);
@@ -88,6 +94,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         register,
         logout,
+        updateUserProfileVisibility,
         isAuthModalOpen,
         authModalMode,
         openAuthModal,

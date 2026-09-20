@@ -5,6 +5,9 @@ import type {
   Edition,
   GoodreadsImportSummary,
   LoginRequest,
+  ProfileVisibility,
+  PublicCollectionResponse,
+  PublicProfile,
   ReadingGoal,
   ReadingStats,
   ReadingStatus,
@@ -363,5 +366,43 @@ export const api = {
       body: JSON.stringify({ year, target_books: targetBooks }),
     });
     return handleResponse<ReadingGoal>(res);
+  },
+
+  // Fetch a public reader profile by username
+  async getPublicProfile(username: string): Promise<PublicProfile> {
+    const res = await fetch(`${API_BASE}/public/users/${encodeURIComponent(username)}`);
+    return handleResponse<PublicProfile>(res);
+  },
+
+  // Fetch a public user's collection, optionally filtered by status or shelf tag
+  async getPublicCollection(
+    username: string,
+    params?: { status?: string; tag?: string }
+  ): Promise<PublicCollectionResponse> {
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    if (params?.tag) query.set('tag', params.tag);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    const res = await fetch(
+      `${API_BASE}/public/users/${encodeURIComponent(username)}/collection${qs}`
+    );
+    return handleResponse<PublicCollectionResponse>(res);
+  },
+
+  // Update profile privacy visibility
+  async updateProfileVisibility(
+    visibility: ProfileVisibility
+  ): Promise<{ profile_visibility: ProfileVisibility; message: string }> {
+    const res = await fetchWithAuth(`${API_BASE}/users/privacy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_visibility: visibility }),
+    });
+    return handleResponse<{ profile_visibility: ProfileVisibility; message: string }>(res);
+  },
+
+  // Get dynamic OpenGraph card image URL
+  getPublicOGCardUrl(username: string): string {
+    return `${API_BASE}/public/users/${encodeURIComponent(username)}/og.svg`;
   },
 };
