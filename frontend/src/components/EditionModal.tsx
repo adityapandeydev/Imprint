@@ -1,23 +1,11 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  X,
-  Calendar,
-  Layers,
-  Copy,
-  Check,
-  BookmarkPlus,
-  Loader2,
-  FileText,
-  Globe,
-  Tag,
-} from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { toast } from '../lib/toast';
-import type { Work, Edition, WishlistItem } from '../types/api';
-
-interface EditionModalProps {
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, BookmarkPlus, Check, Copy, BookOpen } from "lucide-react";
+import { api } from "../lib/api";
+import { toast } from "../lib/toast";
+import { RequestError } from "./RequestState";
+import type { Work, Edition, WishlistItem } from "../types/api";
+interface Props {
   work: Work | null;
   isOpen: boolean;
   onClose: () => void;
@@ -26,8 +14,7 @@ interface EditionModalProps {
   wishlistItem?: WishlistItem | null;
   onSelectWishlistEdition?: (wishlistItemId: string, edition: Edition) => void;
 }
-
-export const EditionModal: React.FC<EditionModalProps> = ({
+export function EditionModal({
   work,
   isOpen,
   onClose,
@@ -35,349 +22,301 @@ export const EditionModal: React.FC<EditionModalProps> = ({
   isWorkInCollection = false,
   wishlistItem,
   onSelectWishlistEdition,
-}) => {
-  const [copiedISBN, setCopiedISBN] = useState<string | null>(null);
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    if (isOpen) {
-      window.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
-    }
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = '';
-    };
-  }, [isOpen, onClose]);
-
-  // Query full work and editions
+}: Props) {
+  const [format, setFormat] = useState("ALL");
+  const [language, setLanguage] = useState("ALL");
+  const [copied, setCopied] = useState("");
+  const [coverError, setCoverError] = useState("");
   const targetId = work?.id || work?.open_library_work_id;
-  const { data, isLoading } = useQuery({
-    queryKey: ['book', targetId],
-    queryFn: () => (targetId ? api.getBook(targetId) : Promise.reject('No ID')),
-    enabled: isOpen && Boolean(targetId),
-    staleTime: 1000 * 60 * 10,
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ["book", targetId],
+    queryFn: () => api.getBook(targetId!),
+    enabled: isOpen && !!targetId,
+    staleTime: 600000,
   });
-
-  // Deduplicate and merge editions by ISBN/identifier to eliminate duplicate cards
   const editions = useMemo(() => {
-    const raw = data?.editions || [];
-    if (raw.length <= 1) return raw;
-
-    const seen = new Map<string, number>();
-    const unique: Edition[] = [];
-
-    for (const ed of raw) {
+    const byId = new Map<string, Edition>();
+    for (const edition of data?.editions || []) {
       const key =
-        ed.isbn13?.trim()
-          ? `isbn13:${ed.isbn13.trim()}`
-          : ed.isbn10?.trim()
-          ? `isbn10:${ed.isbn10.trim()}`
-          : ed.asin?.trim()
-          ? `asin:${ed.asin.trim()}`
-          : ed.open_library_edition_id?.trim()
-          ? `ol:${ed.open_library_edition_id.trim()}`
-          : ed.id
-          ? `id:${ed.id}`
-          : `title:${(ed.title || '').toLowerCase()}|${(ed.publisher || '').toLowerCase()}`;
-
-      if (seen.has(key)) {
-        const existingIdx = seen.get(key)!;
-        const existing = unique[existingIdx];
-        // Merge attributes to retain highest quality metadata
-        unique[existingIdx] = {
-          ...existing,
-          format:
-            existing.format === 'UNKNOWN' && ed.format && ed.format !== 'UNKNOWN'
-              ? ed.format
-              : existing.format,
-          page_count: existing.page_count ?? ed.page_count,
-          publisher: existing.publisher || ed.publisher,
-          publication_year: existing.publication_year ?? ed.publication_year,
-          publication_date: existing.publication_date || ed.publication_date,
-          cover_url: existing.cover_url || ed.cover_url,
-          language: existing.language || ed.language,
-          isbn10: existing.isbn10 || ed.isbn10,
-          isbn13: existing.isbn13 || ed.isbn13,
-          asin: existing.asin || ed.asin,
-        };
-      } else {
-        seen.set(key, unique.length);
-        unique.push({ ...ed });
-      }
+        edition.isbn13 ||
+        edition.isbn10 ||
+        edition.asin ||
+        edition.id ||
+        `${edition.title}:${edition.publisher}:${edition.format}`;
+      if (!byId.has(key)) byId.set(key, edition);
     }
-
-    return unique;
+    return Array.from(byId.values());
   }, [data?.editions]);
-
-  const fullWork = data?.work || work;
-
-  const handleCopy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedISBN(text);
-    toast.info(`Copied ${label}`, text);
-    setTimeout(() => setCopiedISBN(null), 2000);
-  };
-
-  const authorName =
-    fullWork?.authors && fullWork.authors.length > 0
-      ? fullWork.authors.map((a) => a.name).join(', ')
-      : 'Unknown Author';
-
+  const formats = Array.from(new Set(editions.map((e) => e.format)));
+  const languages = Array.from(
+    new Set(editions.map((e) => e.language).filter((v): v is string => !!v)),
+  );
+  const shown = editions.filter(
+    (e) =>
+      (format === "ALL" || e.format === format) &&
+      (language === "ALL" || e.language === language),
+  );
   if (!isOpen || !work) return null;
-
+  const book = data?.work || work;
+  const copy = async (isbn: string) => {
+    try {
+      await navigator.clipboard.writeText(isbn);
+      setCopied(isbn);
+      setTimeout(() => setCopied(""), 2000);
+    } catch {
+      toast.error("ISBN couldn’t be copied");
+    }
+  };
+  const formatName = (value: string) =>
+    value === "UNKNOWN"
+      ? "Format not listed"
+      : value.replaceAll("_", " ").toLowerCase();
   return (
-    <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-        {/* Backdrop */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-        />
-
-        {/* Modal Window */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 16 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 16 }}
-          transition={{ type: 'spring', stiffness: 450, damping: 32 }}
-          className="relative w-full max-w-3xl bg-surface border border-border-subtle rounded-3xl shadow-2xl overflow-hidden z-10 my-auto flex flex-col max-h-[90vh]"
-        >
-          {/* Header */}
-          <div className="flex items-start justify-between p-6 border-b border-border-subtle bg-surface/80 backdrop-blur-md sticky top-0 z-20">
-            <div className="space-y-1 pr-6">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-semibold bg-accent-soft text-accent border border-accent/20">
-                <Layers className="w-3.5 h-3.5" />
-                {wishlistItem ? 'Choose Edition for Your Collection' : 'Work & Published Editions'}
-              </span>
-              <h2 className="font-serif font-bold text-2xl text-text-main leading-snug">
-                {fullWork?.title}
-              </h2>
-              <p className="text-xs text-text-muted">By {authorName}</p>
+    <section className="book-details">
+      <button className="back-link" onClick={onClose}>
+        <ArrowLeft size={17} />
+        Back to books
+      </button>
+      <div className="book-overview">
+        <div className="detail-cover">
+          {book.cover_url && coverError !== book.cover_url ? (
+            <img
+              src={book.cover_url}
+              alt={`Cover of ${book.title}`}
+              onError={() => setCoverError(book.cover_url || "")}
+            />
+          ) : (
+            <div className="cover-fallback">
+              <BookOpen size={32} />
+              <strong>{book.title}</strong>
+              <span>Cover unavailable</span>
             </div>
-
-            <button
-              onClick={onClose}
-              className="w-9 h-9 rounded-xl border border-border-subtle hover:bg-surface-hover flex items-center justify-center text-text-muted hover:text-text-main transition-colors shrink-0 cursor-pointer"
-              aria-label="Close modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
+          )}
+        </div>
+        <div className="detail-copy">
+          <h1>{book.title}</h1>
+          <p className="detail-author">
+            {book.authors?.map((a) => a.name).join(", ") || "Author not listed"}
+          </p>
+          {book.original_year && (
+            <p className="detail-year">First published {book.original_year}</p>
+          )}
+          <button
+            className="button primary"
+            disabled={isWorkInCollection}
+            onClick={() => onAddEditionToWishlist(book)}
+          >
+            {isWorkInCollection ? (
+              <Check size={17} />
+            ) : (
+              <BookmarkPlus size={17} />
+            )}{" "}
+            {isWorkInCollection ? "In your collection" : "Want to read"}
+          </button>
+          <div className="synopsis">
+            <h2>About this book</h2>
+            {isLoading ? (
+              <p>Loading the book’s story…</p>
+            ) : (
+              <p>
+                {book.description ||
+                  "There isn’t a synopsis in the catalog for this book yet."}
+              </p>
+            )}
           </div>
-
-          {/* Scrollable Content Body */}
-          <div className="p-6 overflow-y-auto space-y-6">
-            {/* Top Work Overview */}
-            <div className="flex flex-col sm:flex-row gap-6 items-start">
-              {fullWork?.cover_url && (
-                <div className="w-28 sm:w-36 aspect-[2/3] rounded-xl overflow-hidden border border-border-subtle shadow-md shrink-0 bg-surface-hover">
-                  <img
-                    src={fullWork.cover_url}
-                    alt={fullWork.title}
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              )}
-
-              <div className="space-y-3 flex-1">
-                <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">
-                  {fullWork?.original_year && (
-                    <span className="flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5 text-accent" /> First published {fullWork.original_year}
-                    </span>
-                  )}
-                  {fullWork?.open_library_work_id && (
-                    <span className="font-mono text-[11px] bg-surface-hover px-2 py-0.5 rounded border border-border-subtle">
-                      OL ID: {fullWork.open_library_work_id}
-                    </span>
-                  )}
-                </div>
-
-                {/* Synopsis */}
-                {fullWork?.description ? (
-                  <p className="text-xs sm:text-sm text-text-main/90 leading-relaxed max-h-36 overflow-y-auto pr-1">
-                    {fullWork.description}
-                  </p>
-                ) : (
-                  <p className="text-xs text-text-muted italic">
-                    No synopsis provided by the catalog for this work.
-                  </p>
-                )}
-
-                {/* Subject Tags */}
-                {fullWork?.subject_tags && fullWork.subject_tags.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <Tag className="w-3 h-3 text-accent" />
-                    {fullWork.subject_tags.slice(0, 5).map((tag) => (
-                      <span
-                        key={tag}
-                        className="px-2 py-0.5 text-[11px] rounded-md bg-canvas text-text-muted border border-border-subtle"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Quick Add Whole Work to Collection */}
-                <div className="pt-2">
-                  <button
-                    onClick={() => onAddEditionToWishlist(fullWork!)}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer ${
-                      isWorkInCollection
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'bg-accent text-canvas hover:opacity-90 shadow-xs'
-                    }`}
-                  >
-                    {isWorkInCollection ? (
-                      <>
-                        <Check className="w-4 h-4" /> In Your Collection
-                      </>
-                    ) : (
-                      <>
-                        <BookmarkPlus className="w-4 h-4" /> Want to Read
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
+          {!!book.subject_tags?.length && (
+            <div className="subject-tags">
+              {book.subject_tags.slice(0, 6).map((t) => (
+                <span key={t}>{t}</span>
+              ))}
             </div>
-
-            {/* Published Editions Section */}
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between border-b border-border-subtle pb-2">
-                <h3 className="font-serif font-bold text-lg text-text-main flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-accent" />
-                  Published Editions
-                  <span className="text-xs font-sans font-normal text-text-muted">
-                    ({editions.length})
-                  </span>
-                </h3>
-                <span className="text-[11px] text-text-muted">
-                  Future-ready for retailer price comparison
+          )}
+        </div>
+      </div>
+      <section className="editions-section">
+        <div className="section-heading">
+          <div>
+            <h2>Find your edition</h2>
+            <p>Compare formats, publishers, languages, and ISBNs.</p>
+          </div>
+          <span>{editions.length} editions</span>
+        </div>
+        {isError ? (
+          <RequestError
+            title="The book’s details couldn’t load."
+            onRetry={() => void refetch()}
+          />
+        ) : isLoading ? (
+          <div
+            className="skeleton"
+            style={{ height: 150 }}
+            aria-label="Loading editions"
+          />
+        ) : (
+          <>
+            {!!editions.length && (
+              <div className="edition-filters">
+                <label>
+                  Format
+                  <select
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value)}
+                  >
+                    <option value="ALL">All formats</option>
+                    {formats.map((f) => (
+                      <option value={f} key={f}>
+                        {formatName(f)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Language
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                  >
+                    <option value="ALL">All languages</option>
+                    {languages.map((l) => (
+                      <option value={l} key={l}>
+                        {languageName(l)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span>
+                  {shown.length} matching{" "}
+                  {shown.length === 1 ? "edition" : "editions"}
                 </span>
               </div>
-
-              {isLoading ? (
-                <div className="text-center py-8 space-y-2 text-text-muted">
-                  <Loader2 className="w-6 h-6 animate-spin text-accent mx-auto" />
-                  <p className="text-xs">Fetching editions from catalog...</p>
-                </div>
-              ) : editions.length === 0 ? (
-                <div className="text-center py-8 bg-surface-hover/40 rounded-xl border border-border-subtle p-4 text-text-muted text-xs">
-                  No individual ISBN editions cataloged yet for this work.
-                </div>
-              ) : (
-                <div className="grid sm:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
-                  {editions.map((edition) => (
-                    <div
-                      key={edition.id || edition.isbn13 || edition.isbn10 || edition.title}
-                      className="p-3.5 rounded-xl bg-canvas border border-border-subtle hover:border-accent/40 transition-colors space-y-2.5 flex flex-col justify-between"
+            )}
+            {!shown.length ? (
+              <div className="empty-state">
+                <h2>
+                  {editions.length
+                    ? "No matching editions."
+                    : "No editions listed yet."}
+                </h2>
+                <p>
+                  {editions.length
+                    ? "Try another format or language."
+                    : "You can still save this book to your collection."}
+                </p>
+                {!!editions.length && (
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setFormat("ALL");
+                      setLanguage("ALL");
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="edition-list">
+                {shown.map((e) => {
+                  const isbn = e.isbn13 || e.isbn10;
+                  const selected =
+                    !!wishlistItem &&
+                    (wishlistItem.edition_id === e.id ||
+                      !!(
+                        isbn &&
+                        (wishlistItem.edition?.isbn13 === isbn ||
+                          wishlistItem.edition?.isbn10 === isbn)
+                      ));
+                  return (
+                    <article
+                      className="edition-row"
+                      key={e.id || isbn || `${e.publisher}-${e.title}`}
                     >
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-accent-soft text-accent border border-accent/20">
-                            {edition.format || 'PAPERBACK'}
-                          </span>
-
-                          {edition.publication_year && (
-                            <span className="text-xs text-text-muted font-medium">
-                              {edition.publication_year}
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="font-semibold text-xs text-text-main line-clamp-1">
-                          {edition.publisher || 'Unknown Publisher'}
-                        </p>
-
-                        <div className="flex items-center gap-3 text-[11px] text-text-muted">
-                          {edition.page_count && (
-                            <span className="flex items-center gap-1">
-                              <FileText className="w-3 h-3" /> {edition.page_count} pages
-                            </span>
-                          )}
-                          {edition.language && (
-                            <span className="flex items-center gap-1">
-                              <Globe className="w-3 h-3" /> {edition.language.toUpperCase()}
-                            </span>
-                          )}
-                        </div>
+                      <div className="edition-format">
+                        {formatName(e.format)}
+                        <span>
+                          {e.publication_year ||
+                            e.publication_date ||
+                            "Date not listed"}
+                        </span>
                       </div>
-
-                      {/* Identifiers & Action */}
-                      <div className="pt-2 border-t border-border-subtle/60 flex items-center justify-between gap-2 text-xs">
-                        <div className="flex items-center gap-1 font-mono text-[11px] text-text-muted">
-                          {edition.isbn13 ? (
-                            <button
-                              onClick={() => handleCopy(edition.isbn13!, 'ISBN-13')}
-                              className="hover:text-accent flex items-center gap-1 cursor-pointer bg-surface px-1.5 py-0.5 rounded border border-border-subtle"
-                              title="Click to copy ISBN-13"
-                            >
-                              <span>ISBN: {edition.isbn13}</span>
-                              {copiedISBN === edition.isbn13 ? (
-                                <Check className="w-3 h-3 text-emerald-500" />
-                              ) : (
-                                <Copy className="w-3 h-3" />
-                              )}
-                            </button>
-                          ) : edition.isbn10 ? (
-                            <button
-                              onClick={() => handleCopy(edition.isbn10!, 'ISBN-10')}
-                              className="hover:text-accent flex items-center gap-1 cursor-pointer bg-surface px-1.5 py-0.5 rounded border border-border-subtle"
-                              title="Click to copy ISBN-10"
-                            >
-                              <span>ISBN: {edition.isbn10}</span>
-                              {copiedISBN === edition.isbn10 ? (
-                                <Check className="w-3 h-3 text-emerald-500" />
-                              ) : (
-                                <Copy className="w-3 h-3" />
-                              )}
-                            </button>
-                          ) : (
-                            <span className="text-text-muted/60">No ISBN</span>
-                          )}
-                        </div>
-
-                        {wishlistItem ? (
-                          wishlistItem.edition_id === edition.id ||
-                          (wishlistItem.edition?.isbn13 &&
-                            edition.isbn13 &&
-                            wishlistItem.edition.isbn13 === edition.isbn13) ? (
-                            <span className="inline-flex items-center gap-1 text-emerald-500 font-semibold text-xs bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
-                              <Check className="w-3.5 h-3.5" /> Current Edition
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => onSelectWishlistEdition?.(wishlistItem.id, edition)}
-                              className="px-3 py-1 rounded-lg bg-accent text-canvas hover:opacity-90 font-medium text-xs transition-all flex items-center gap-1 cursor-pointer"
-                            >
-                              <Check className="w-3.5 h-3.5" /> Set as My Edition
-                            </button>
-                          )
+                      <div className="edition-description">
+                        <h3>{e.publisher || "Publisher not listed"}</h3>
+                        <p>
+                          {[
+                            e.page_count ? `${e.page_count} pages` : null,
+                            e.language ? languageName(e.language) : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "Details not listed"}
+                        </p>
+                        {isbn ? (
+                          <button
+                            className="isbn-copy"
+                            onClick={() => void copy(isbn)}
+                            aria-label={`Copy ISBN ${isbn}`}
+                          >
+                            ISBN {isbn}
+                            {copied === isbn ? (
+                              <Check size={13} />
+                            ) : (
+                              <Copy size={13} />
+                            )}
+                          </button>
+                        ) : (
+                          <span className="muted">ISBN not listed</span>
+                        )}
+                      </div>
+                      <div className="edition-action">
+                        {selected ? (
+                          <span className="selected-edition">
+                            <Check size={16} />
+                            Your edition
+                          </span>
+                        ) : wishlistItem ? (
+                          <button
+                            className="button secondary compact"
+                            disabled={!e.id}
+                            onClick={() =>
+                              onSelectWishlistEdition?.(wishlistItem.id, e)
+                            }
+                          >
+                            Choose edition
+                          </button>
                         ) : (
                           <button
-                            onClick={() => onAddEditionToWishlist(fullWork!, edition)}
-                            className="px-2.5 py-1 rounded-lg bg-surface text-accent hover:bg-accent hover:text-canvas border border-accent/30 text-[11px] font-medium transition-colors cursor-pointer"
+                            disabled={isWorkInCollection || !e.id}
+                            className="button secondary compact"
+                            onClick={() => onAddEditionToWishlist(book, e)}
                           >
-                            Save Edition
+                            {isWorkInCollection
+                              ? "Already saved"
+                              : "Save edition"}
                           </button>
                         )}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </motion.div>
-      </div>
-    </AnimatePresence>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </section>
   );
-};
+}
+function languageName(code: string) {
+  const names: Record<string, string> = {
+    eng: "English",
+    en: "English",
+    hin: "Hindi",
+    hi: "Hindi",
+    fre: "French",
+    fr: "French",
+    spa: "Spanish",
+    es: "Spanish",
+    ger: "German",
+    de: "German",
+  };
+  return names[code.toLowerCase()] || code;
+}

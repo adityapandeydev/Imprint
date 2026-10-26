@@ -113,3 +113,7 @@ export function useAuth(): AuthContextType {
   }
   return context;
 }
+
+export function useOptionalAuth() {
+  return useContext(AuthContext);
+}

@@ -140,7 +140,7 @@ describe('PublicProfileView component', () => {
   });
 
   it('renders private profile barrier when profile is private (403)', async () => {
-    vi.mocked(api.getPublicProfile).mockRejectedValue(new Error('this reader profile is private'));
+    vi.mocked(api.getPublicCollection).mockRejectedValue(new Error('this reader profile is private'));
 
     render(
       <PublicProfileView

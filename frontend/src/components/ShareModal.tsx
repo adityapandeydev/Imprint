@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
   Copy,
@@ -7,9 +7,10 @@ import {
   Share2,
   ExternalLink,
   MessageCircle,
-} from 'lucide-react';
-import { api } from '../lib/api';
-import { toast } from '../lib/toast';
+} from "lucide-react";
+import { useDialog } from "../lib/useDialog";
+import { api } from "../lib/api";
+import { toast } from "../lib/toast";
 
 const XIcon: React.FC<{ className?: string }> = ({ className }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -32,11 +33,13 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   displayName,
   shelf,
 }) => {
+  const dialogRef = useDialog(isOpen, onClose);
   const [copied, setCopied] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
 
   if (!isOpen) return null;
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
   const sharePath = shelf
     ? `/u/${encodeURIComponent(username)}/shelf/${encodeURIComponent(shelf)}`
     : `/u/${encodeURIComponent(username)}`;
@@ -46,40 +49,40 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const shareTitle = shelf
     ? `Explore ${displayName}'s "${shelf}" shelf on Imprint`
     : `Explore ${displayName}'s curated library on Imprint`;
-  const shareText = `Check out my reading collection and literary velocity on Imprint: ${shareUrl}`;
+  const shareText = `Check out my reading collection and reading progress on Imprint: ${shareUrl}`;
 
   const handleCopy = async () => {
     try {
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(shareUrl);
       } else {
-        const textarea = document.createElement('textarea');
+        const textarea = document.createElement("textarea");
         textarea.value = shareUrl;
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+        document.execCommand("copy");
         document.body.removeChild(textarea);
       }
       setCopied(true);
-      toast.success('Share link copied to clipboard!');
+      toast.success("Share link copied to clipboard!");
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      toast.error('Failed to copy link');
+      toast.error("Failed to copy link");
     }
   };
 
   const handleTwitterShare = () => {
     const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(
-      shareTitle
+      shareTitle,
     )}&url=${encodeURIComponent(shareUrl)}`;
-    window.open(tweetUrl, '_blank', 'noopener,noreferrer');
+    window.open(tweetUrl, "_blank", "noopener,noreferrer");
   };
 
   const handleWhatsAppShare = () => {
     const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(
-      `${shareTitle}: ${shareUrl}`
+      `${shareTitle}: ${shareUrl}`,
     )}`;
-    window.open(waUrl, '_blank', 'noopener,noreferrer');
+    window.open(waUrl, "_blank", "noopener,noreferrer");
   };
 
   const handleNativeShare = async () => {
@@ -107,7 +110,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={onClose}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 bg-black/35"
         />
 
         {/* Modal Window */}
@@ -115,8 +118,13 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           initial={{ opacity: 0, scale: 0.95, y: 15 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 text-text-main z-10 custom-scrollbar"
+          transition={{ type: "spring", damping: 25, stiffness: 300 }}
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-heading"
+          tabIndex={-1}
+          className="modal-window relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 text-text-main z-10 custom-scrollbar"
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border-subtle pb-4 mb-5">
@@ -125,8 +133,11 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                 <Share2 className="w-5 h-5" />
               </span>
               <div>
-                <h2 className="text-lg font-serif font-bold text-text-main">
-                  {shelf ? `Share "${shelf}" Shelf` : 'Share Reader Library'}
+                <h2
+                  id="share-heading"
+                  className="text-lg font-serif font-bold text-text-main"
+                >
+                  {shelf ? `Share "${shelf}" Shelf` : "Share Reader Library"}
                 </h2>
                 <p className="text-xs text-text-muted">
                   Share your public collection, challenge pacing, and shelves
@@ -144,31 +155,46 @@ export const ShareModal: React.FC<ShareModalProps> = ({
 
           {/* OpenGraph Preview Card */}
           <div className="mb-5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
+            <p className="text-xs font-semibold text-text-muted mb-2">
               Social Card Preview (Twitter, WhatsApp, iMessage)
             </p>
-            <div className="rounded-xl overflow-hidden border border-border-subtle bg-black/30 shadow-md aspect-[1200/630] relative group">
-              <img
-                src={ogCardUrl}
-                alt="OpenGraph Social Card"
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.01]"
-                loading="lazy"
-              />
+            <div className="rounded-xl overflow-hidden border border-border-subtle bg-canvas aspect-[1200/630] relative group">
+              {previewFailed ? (
+                <div className="share-preview-fallback">
+                  <strong>{displayName}’s library</strong>
+                  <span>
+                    The preview image is unavailable. Your link is still ready
+                    to share.
+                  </span>
+                </div>
+              ) : (
+                <img
+                  src={ogCardUrl}
+                  alt="OpenGraph Social Card"
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.01]"
+                  loading="lazy"
+                  onError={() => setPreviewFailed(true)}
+                />
+              )}
               <div className="absolute inset-0 ring-1 ring-inset ring-white/10 rounded-xl pointer-events-none" />
             </div>
           </div>
 
           {/* Share Link Copy Field */}
           <div className="mb-5">
-            <label className="block text-xs text-text-muted mb-1.5 font-medium">
+            <label
+              htmlFor="public-share-link"
+              className="block text-xs text-text-muted mb-1.5 font-medium"
+            >
               Public Share Link:
             </label>
             <div className="flex items-center gap-2">
               <input
+                id="public-share-link"
                 type="text"
                 readOnly
                 value={shareUrl}
-                className="flex-1 bg-surface-hover/60 border border-border-subtle rounded-lg px-3 py-2 text-xs font-mono text-text-main truncate focus:outline-none select-all"
+                className="flex-1 bg-surface-hover/60 border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-main truncate focus:outline-none select-all"
               />
               <button
                 onClick={handleCopy}
@@ -207,15 +233,16 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               <span>WhatsApp</span>
             </button>
 
-            {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
-              <button
-                onClick={handleNativeShare}
-                className="col-span-2 sm:col-span-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-accent-soft border border-accent/20 text-accent hover:opacity-90 text-xs font-medium transition-colors cursor-pointer"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Device Share</span>
-              </button>
-            )}
+            {typeof navigator !== "undefined" &&
+              typeof navigator.share === "function" && (
+                <button
+                  onClick={handleNativeShare}
+                  className="col-span-2 sm:col-span-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-accent-soft border border-accent/20 text-accent hover:opacity-90 text-xs font-medium transition-colors cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Device Share</span>
+                </button>
+              )}
           </div>
         </motion.div>
       </div>

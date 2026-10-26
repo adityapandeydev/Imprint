@@ -68,14 +68,14 @@ describe('ProfileStatsModal component', () => {
 
   it('renders nothing when isOpen is false', () => {
     render(<ProfileStatsModal isOpen={false} onClose={mockOnClose} />);
-    expect(screen.queryByText(/Literary Velocity & Analytics/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reading stats/i)).not.toBeInTheDocument();
   });
 
   it('renders loading state initially', async () => {
     vi.mocked(api.getReadingStats).mockReturnValue(new Promise(() => {})); // pending promise
     render(<ProfileStatsModal isOpen={true} onClose={mockOnClose} />);
 
-    expect(screen.getByText(/Computing reading velocity & analytics.../i)).toBeInTheDocument();
+    expect(screen.getByText(/Loading your reading stats/i)).toBeInTheDocument();
   });
 
   it('renders reading stats and challenge metrics when loaded', async () => {
@@ -93,7 +93,7 @@ describe('ProfileStatsModal component', () => {
     expect(screen.getByText('8 of 24 books completed')).toBeInTheDocument();
 
     // 12-Month Velocity Chart
-    expect(screen.getByText(/12-Month Reading Velocity \(2026\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Books through the year/i)).toBeInTheDocument();
     expect(screen.getByText('Jan')).toBeInTheDocument();
     expect(screen.getByText('Dec')).toBeInTheDocument();
 

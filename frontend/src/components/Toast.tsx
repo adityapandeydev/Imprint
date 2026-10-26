@@ -22,7 +22,7 @@ export const ToastContainer: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0">
+    <div role="status" aria-live="polite" className="toast-stack fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0">
       <AnimatePresence mode="popLayout">
         {toasts.map((item) => (
           <motion.div
@@ -31,7 +31,7 @@ export const ToastContainer: React.FC = () => {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9, y: 10 }}
             transition={{ type: 'spring', stiffness: 450, damping: 30 }}
-            className="pointer-events-auto bg-surface/95 backdrop-blur-md border border-border-subtle rounded-xl p-3.5 shadow-book flex items-start gap-3 text-text-main"
+            className="pointer-events-auto bg-surface border border-border-subtle rounded-xl p-3.5 shadow-book flex items-start gap-3 text-text-main"
           >
             {item.type === 'success' && (
               <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />

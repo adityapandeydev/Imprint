@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   UploadCloud,
   FileText,
@@ -7,9 +7,10 @@ import {
   AlertCircle,
   X,
   ExternalLink,
-} from 'lucide-react';
-import { api } from '../lib/api';
-import type { GoodreadsImportSummary } from '../types/api';
+} from "lucide-react";
+import { useDialog } from "../lib/useDialog";
+import { api } from "../lib/api";
+import type { GoodreadsImportSummary } from "../types/api";
 
 interface GoodreadsImportModalProps {
   isOpen: boolean;
@@ -22,6 +23,7 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const dialogRef = useDialog(isOpen, onClose);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,13 +35,15 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
 
   const handleFile = (selectedFile: File) => {
     setError(null);
-    if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
-      setError('Please select a valid CSV file (e.g. goodreads_library_export.csv)');
+    if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
+      setError(
+        "Please select a valid CSV file (e.g. goodreads_library_export.csv)",
+      );
       return;
     }
     // 5MB limit
     if (selectedFile.size > 5 * 1024 * 1024) {
-      setError('File exceeds the 5MB upload size limit.');
+      setError("File exceeds the 5MB upload size limit.");
       return;
     }
     setFile(selectedFile);
@@ -55,7 +59,7 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
 
   const handleSubmit = async () => {
     if (!file) {
-      setError('Please select a CSV file to import.');
+      setError("Please select a CSV file to import.");
       return;
     }
 
@@ -66,7 +70,11 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
       setSummary(result);
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed. Please verify your CSV format.');
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Import failed. Please verify your CSV format.",
+      );
     } finally {
       setUploading(false);
     }
@@ -88,7 +96,7 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={resetModal}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 bg-black/35"
         />
 
         {/* Modal Window */}
@@ -96,8 +104,13 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 sm:p-7 text-text-main z-10"
+          transition={{ type: "spring", damping: 25, stiffness: 300 }}
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="goodreads-heading"
+          tabIndex={-1}
+          className="modal-window relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 sm:p-7 text-text-main z-10"
         >
           {/* Header */}
           <div className="flex items-start justify-between border-b border-border-subtle pb-4 mb-5">
@@ -106,11 +119,14 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                 <UploadCloud className="w-5 h-5 text-accent" />
               </span>
               <div>
-                <h2 className="text-lg sm:text-xl font-serif font-bold text-text-main">
+                <h2
+                  id="goodreads-heading"
+                  className="text-lg sm:text-xl font-serif font-bold text-text-main"
+                >
                   Migrate from Goodreads
                 </h2>
                 <p className="text-xs text-text-muted mt-0.5">
-                  1-Click import of your reading logs, shelves, and ratings
+                  Bring your reading logs, shelves, and ratings.
                 </p>
               </div>
             </div>
@@ -131,7 +147,9 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-text-main">Import Complete!</h3>
+                <h3 className="text-base font-semibold text-text-main">
+                  Import Complete!
+                </h3>
                 <p className="text-xs text-text-muted mt-1">
                   Your Goodreads library has been migrated into Imprint.
                 </p>
@@ -145,8 +163,12 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                   </p>
                 </div>
                 <div>
-                  <p className="text-[11px] text-text-muted">Skipped (Exists)</p>
-                  <p className="text-xl font-bold text-text-main mt-0.5">{summary.skipped_count}</p>
+                  <p className="text-[11px] text-text-muted">
+                    Skipped (Exists)
+                  </p>
+                  <p className="text-xl font-bold text-text-main mt-0.5">
+                    {summary.skipped_count}
+                  </p>
                 </div>
                 <div>
                   <p className="text-[11px] text-text-muted">Failed</p>
@@ -158,7 +180,7 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
 
               <button
                 onClick={resetModal}
-                className="w-full py-2.5 bg-accent hover:opacity-90 text-canvas font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer"
+                className="w-full py-2.5 bg-accent hover:opacity-90 text-canvas font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
               >
                 View Collection
               </button>
@@ -168,10 +190,12 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
             <div className="space-y-4">
               {/* Instructions */}
               <div className="bg-surface-hover/50 border border-border-subtle rounded-xl p-3.5 text-xs text-text-muted space-y-1.5">
-                <p className="font-semibold text-text-main">How to get your Goodreads file:</p>
+                <p className="font-semibold text-text-main">
+                  How to get your Goodreads file:
+                </p>
                 <ol className="list-decimal list-inside space-y-1 text-[11px]">
                   <li>
-                    Log in to{' '}
+                    Log in to{" "}
                     <a
                       href="https://www.goodreads.com/review/import"
                       target="_blank"
@@ -186,7 +210,9 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                     Click <strong>Export Library</strong> under Import/Export
                   </li>
                   <li>
-                    Upload the exported <code className="text-accent font-mono">.csv</code> file below
+                    Upload the exported{" "}
+                    <code className="text-accent font-mono">.csv</code> file
+                    below
                   </li>
                 </ol>
               </div>
@@ -199,13 +225,22 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                 }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
+                role="button"
+                tabIndex={0}
+                aria-label="Choose Goodreads CSV file"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
                 onClick={() => fileInputRef.current?.click()}
                 className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
                   dragOver
-                    ? 'border-accent bg-accent-soft/40'
+                    ? "border-accent bg-accent-soft/40"
                     : file
-                    ? 'border-emerald-500/60 bg-emerald-500/5'
-                    : 'border-border-subtle hover:border-accent/40 bg-surface-hover/20'
+                      ? "border-emerald-500/60 bg-emerald-500/5"
+                      : "border-border-subtle hover:border-accent/40 bg-surface-hover/20"
                 }`}
               >
                 <input
@@ -213,7 +248,9 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                   type="file"
                   accept=".csv"
                   className="hidden"
-                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                  onChange={(e) =>
+                    e.target.files?.[0] && handleFile(e.target.files[0])
+                  }
                 />
 
                 {file ? (
@@ -223,14 +260,15 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                       {file.name}
                     </p>
                     <p className="text-[10px] text-text-muted">
-                      {(file.size / 1024).toFixed(1)} KB — Click or drop another to replace
+                      {(file.size / 1024).toFixed(1)} KB — Click or drop another
+                      to replace
                     </p>
                   </div>
                 ) : (
                   <div className="space-y-2">
                     <UploadCloud className="w-8 h-8 text-accent/70 mx-auto" />
                     <p className="text-xs font-medium text-text-main">
-                      Drag & drop your Goodreads CSV here, or{' '}
+                      Drag & drop your Goodreads CSV here, or{" "}
                       <span className="text-accent font-semibold underline underline-offset-2">
                         browse
                       </span>
@@ -262,7 +300,7 @@ export const GoodreadsImportModal: React.FC<GoodreadsImportModalProps> = ({
                   type="button"
                   disabled={!file || uploading}
                   onClick={handleSubmit}
-                  className="flex-1 py-2.5 bg-accent hover:opacity-90 disabled:opacity-50 text-canvas font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="flex-1 py-2.5 bg-accent hover:opacity-90 disabled:opacity-50 text-canvas font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {uploading ? (
                     <>
